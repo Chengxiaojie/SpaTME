@@ -1,0 +1,160 @@
+# Mon May 22 11:19:35 2023 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project:
+library(data.table)
+library(ComplexHeatmap)
+library(doParallel)
+library(dplyr)
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/pheno_program_NMF.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+workdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/"
+setwd(dir = workdir)
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+# load spatial data
+cancer <- "KIRC"
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+nmf.lt <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGA_NMF/", cancer, "/", "nmf.lt.rds"))
+# prediction in ST
+nmf_pred.lt <- list()
+br <- c("pos" = "5", "neg" = "7")
+for (type in c("neg", "pos")) {
+  savedir <- paste0(workdir, "combBulk/TCGA_Cox/Figures/PredfactorinST/", type,"/")
+  if(!dir.exists(savedir)){
+    dir.create(savedir, recursive = T)
+  }
+  best_rank <- br[[type]]
+  nmf <- nmf.lt[[type]]$nmf$nmf$fit[[best_rank]]
+  nmf_pred.lt[[type]] <- list()
+  for(sam in names(Spatial.list)){
+    print(sam)
+    nmf_pred.lt[[type]][[sam]] <- PredNMFinST(Spatial.list[[sam]], 
+                                                 W = nmf@fit@W, 
+                                         plotfile = paste0(savedir, sam, "_factors.pdf"))
+  }
+}
+for (type in c("neg", "pos")) {
+  savedir <- paste0(workdir, "combBulk/TCGA_Cox/Figures/PredfactorinST/", type,"/")
+  if(!dir.exists(savedir)){
+    dir.create(savedir, recursive = T)
+  }
+  for(sam in names(Spatial.list)){
+    print(sam)
+    H = nmf_pred.lt[[type]][[sam]]@fit@H
+    pdf(paste0(savedir, sam, "_factors.pdf"))
+    par(mfrow=c(nrow(H),1))
+    for(i in rownames(H)){
+      p <- SpotVisualize(Spatial.list[[sam]], 
+                         meta = scale(H[i,])[, 1], 
+                         return = T, 
+                         title = i)
+      print(p)
+    }
+    dev.off()
+  }
+}
+
+saveRDS(nmf_pred.lt,
+     file = paste0(workdir, "combBulk/TCGA_Cox/nmf_pred.lt.rds"))
+# stopImplicitCluster()
+# stopCluster(cl)
+# ########################### Tue May 30 14:07:23 2023 ###########################
+# ## factor analysis in ST
+type <- "neg"
+nmf <- readRDS(paste0("combBulk/TCGA_Cox/nmf_", type, ".rds"))
+nmfbest <- nmf$nmf$fit[[nmf$best_rank]]
+
+# boxplot of factor expression in each spot type
+sam = "GSM5924033_ffpe_c_7"
+st = Spatial.list[[sam]]
+# data <- cbind(t(nmf$nmf_pred.lt[[sam]]@fit@H), type = as.character(st$Classification))
+# data <- reshape2::melt(data.frame(data), id.vars = "type")
+# data$value <- as.numeric(data$value)
+# pdf(paste0(workdir, "combBulk/TCGA_Cox/Figures/boxplot/", sam, "_factor_type.pdf"), width = 10)
+# ggplot(data, aes(x = variable, y = value, fill = type)) +
+#   geom_boxplot()+ theme(text = element_text(size = 16),
+#                         panel.background = element_blank(),
+#                         axis.line = element_line(colour = "black")) 
+# dev.off()
+# top metagenes
+W <- nmfbest@fit@W
+mg_vt <- FactorMetagenes(ref_W = W,
+                         method = "nsd",
+                         sd_n = 1.95,
+                         savefile = paste0(workdir, "combBulk/TCGA_Cox/Figures/", type, "/", type, "_factor_metagenes.pdf"))
+mg_lt <- split(x = names(mg_vt), f = mg_vt)
+## enrichment analysis of metagenes
+pdf(paste0(workdir, "combBulk/TCGA_Cox/Figures/", type, "/", type, "_factor_reactome_enrich.pdf"), width = 12)
+mg_enrich <- FactorEnrichAnalysis(mg_vt = mg_vt,
+                                  fun = "enrichPathway",
+                                  pAdjustMethod = "none"
+                                  )
+dev.off()
+# mg_enrich <- mg_enrich@compareClusterResult
+saveRDS(list(mg_vt = mg_vt,
+             mg_enrich = mg_enrich),
+        paste0(workdir, "combBulk/TCGA_Cox/", type, "/", type, "_metagenes.rds"))
+########################### Thu Jun  1 21:56:42 2023 ###########################
+## factor in tumor boundary
+# load nmf
+type = "neg"
+nmf.lt <- readRDS(paste0("combBulk/TCGA_Cox/nmf_", type, ".rds"))
+W <- nmf.lt$W
+# top metagenes
+mg_vt <- FactorMetagenes(ref_W = W,
+                         method = "nsd",
+                         sd_n = 1.95,
+                         plot = T)
+mg_lt <- split(x = names(mg_vt), f = mg_vt)
+# load boundary information
+Bounfea.lt <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/SpatialFeature/Tumor_boundary/Temp_RDS/Bounfea.2.lt.rds")
+#names(Spatial.list)
+sam = "GSM5924033_ffpe_c_7"
+sam = "GSM5924032_ffpe_c_4"
+for(sam in names(Bounfea.lt)){
+  st <- Spatial.list[[sam]]
+  nmf.used <- nmf.lt$nmf_pred.lt[[sam]]
+  pred_H <- nmf.used@fit@H
+  # compare between bountype
+  bountype <- Bounfea.lt[[sam]]@bountype
+  group <- rep("nonboun", ncol(st))
+  names(group) <- colnames(st)
+  group[unlist(bountype)] <- "boun"
+  table(group)
+  num = 6
+  pdf(paste0("SpatialFeature/Tumor_boundary/figures/Boundary_NMFfactor/", sam, "_factor", num, "_compareBountype.pdf"))
+  par(mfrow=c(3,1))
+  plot1 = ggplot(data = data.frame(pred_factor = pred_H[num,], group), 
+                 aes(x = group, y = pred_factor, fill = group)) +
+    geom_boxplot()+ theme(text = element_text(size = 16),
+                          panel.background = element_blank(),
+                          axis.line = element_line(colour = "black"),
+                          plot.title = element_text(hjust = 0.5)) +
+    labs(title = "Compare_Tboun_nonboun")
+  print(plot1)
+  # compare between bounclass
+  bounclass <- Bounfea.lt[[sam]]@bounclass
+  group <- unlist(bounclass)
+  data <- str_split_fixed(names(group), "\\.", 3)[,2:3] 
+  rownames(data) <- data[, 2]
+  data <- data.frame(type = data[, 1], group)
+  
+  plot2 = ggplot(data = data.frame(pred_factor = pred_H[num, rownames(data)], data), 
+                 aes(x = type, y = pred_factor, fill = type)) +
+    geom_boxplot()+ theme(text = element_text(size = 16),
+                          panel.background = element_blank(),
+                          axis.line = element_line(colour = "black"),
+                          plot.title = element_text(hjust = 0.5)) +
+    labs(title = "Compare_bountype")
+  print(plot2)
+  st_pos <- st@images[[1]]@coordinates[, c("row", "col")]
+  rownames(st_pos) <- colnames(st)
+  plot3 <- SpotVisualize(st, st_pos[rownames(data),], meta = pred_H[6, rownames(data)], size = 2.5, return = T) +
+    scale_color_gradientn(colours = c("#3d5a80","#fff3b0","#ce4257"))
+  print(plot3)
+  dev.off()
+}
+
+

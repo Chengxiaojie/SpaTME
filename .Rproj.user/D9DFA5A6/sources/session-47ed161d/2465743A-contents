@@ -1,0 +1,482 @@
+# Thu Jun 29 19:57:06 2023 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project: pipeline
+# load data
+
+# preprocess
+# calculating spatial features
+# 
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/base.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/Se_preprocess.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/ST_features.2.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/LR_interaction.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/TN_interface.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/BayesSpace.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/pheno_program_NMF.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/unit.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/FeatureSelection.R")
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+library(xgboost)
+library(PRROC)
+# load data
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/BreastEGA8031/Temp_RDS/ST.labeled.list.rds")
+outdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/BreastEGA8031/pipeline/"
+#stf.lt <- list()
+stf.lt <- readRDS(paste0(outdir, "stf.lt.rds"))
+for (sam in names(Spatial.list)) {
+  # coordinate information check for each ST samples
+  Spatial.list[[sam]] <- STcoordCheck(Spatial.list[[sam]],
+                                      platform = "ST",
+                                      hexagon.convert = F,
+                                      verbose = T)
+  # create stf object with initial features
+  cell.abun <- read.table(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/BreastEGA8031/cell2location/", sam, "/", sam, ".cell.abundance.txt"),
+                          sep = "\t", 
+                          header = T, 
+                          row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  stf <- CreateStfObj(st = Spatial.list[[sam]], 
+                      assay = "SCT",
+                      slot = "data",
+                      cell.abun = cell.abun,
+                      norm = T,
+                      min.prop = 0.05,
+                      init.fea = c("Position", "CellColocal", "SpeGenes"),
+                      verbose = T
+  )
+  stf.lt[[sam]] <- stf 
+}
+#saveRDS(Spatial.list, "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/BreastEGA8031/Temp_RDS/ST.labeled.list.rds")
+# plot first three celltypes
+# TLS prediction
+# calculating immune abundance and immune diversity
+celltypes <- sort(colnames(stf.lt[[1]]@CellEnrich))
+names(celltypes) <- c("Plasma/B.cells", "Fibroblast", "Tumor", "Tumor", "Cycling_Myeloid", "T.cells", "Dendritic.cells",
+"Endothelial", "Luminal", "Macrophage", "Luminal", "Monocyte", "Myoepithelial", "T.cells", "NK", "NKT.cells",
+"Plasmablasts", "PVL", "T.cells", "T.cells","T.cells", "T.cells")
+immune.cells <- sort(c("Plasma/B.cells", "T.cells", "Dendritic.cells", "Macrophage", "Monocyte", "NK"))
+for (sam in names(stf.lt)) {
+  data <- stf.lt[[sam]]@CellEnrich[, celltypes]
+  data <- aggregate(t(data), by = list(names(celltypes)), sum) %>% 
+    tibble::column_to_rownames("Group.1")
+  data <- t(data)
+  data <- data[, immune.cells]
+  # immune abundance
+  imm.enrich <- rowSums(data)
+  # immune diversity
+  #data <- apply(data, 2, Norm01)
+  cellColocal <- combn(x = colnames(data), 
+                       m = 2, 
+                       FUN = function(x){
+                         Norm01(data[, x[1]]) * Norm01(data[, x[2]])
+                         })
+  cellColocal <- round(cellColocal, 2)
+  rownames(cellColocal) <- rownames(data)
+  colnames(cellColocal) <- combn(x = colnames(data), 
+                                 m = 2, 
+                                 FUN = function(x){
+                                   paste(sort(c(x[1], x[2])), collapse = "_")
+                                 })
+  imm.diver <- apply(cellColocal, 1, function(x){
+    sum(x >= 0.1)
+  })
+  imm.diver <- imm.diver/ncol(cellColocal)
+  imm.diver <- round(imm.diver, 2)
+  stf.lt[[sam]]@Others <- list(data = data.frame(data, check.names = F),
+                               cellColocal = data.frame(cellColocal, check.names = F),
+                               imminf = data.frame(imm.enrich, imm.diver))
+} 
+
+# calculating gene set enrichment scores for curated signatures
+for(sam in names(Spatial.list)[7:8]){
+  print(sam)
+  expr <- GetAssayData(object = Spatial.list[[sam]],
+                       assay = "SCT",
+                       slot = "data")
+  expr <- as.matrix(expr)
+  stf.lt[[sam]] = GetGsetSigScore(expr = expr, 
+                        stf = stf.lt[[sam]],
+                        category = "CuratedSig",
+                        types = c("Immune"),
+                        method = "AddModuleScore",
+                        scale = F,
+                        verbose = F)
+}
+# plot annotation
+for (sam in names(stf.lt)[7:8]) {
+  col <- LabelMapcolor(sort(as.character(stf.lt[[sam]]@Annotation$patho_anno)), assgin.col = c("immune infiltrate" = "#f4a261"))
+  SpotVisualize(pos = stf.lt[[sam]]@Position,
+                meta = stf.lt[[sam]]@Annotation$patho_anno,
+                size = 5,
+                savefile = paste0(outdir, "TLS/", sam, "_TLS_anno" ,".pdf"),
+                scale_y_reverse = T,
+                p.width = 8, p.height = 8,
+                cha.col = col)
+}
+# plot TLS sig
+for (sam in names(stf.lt)[7:8]) {
+  savedir <- paste0(outdir, "TLS/Spot_features/", sam)
+  if (! dir.exists(savedir)) {
+    dir.create(savedir, recursive = T)
+  }
+  for(sig in c("imprint.29sig", "LC.50sig", "imprint.65sig", "B.cells_T.cells")){
+        if (sig == "B.cells_T.cells") {
+         meta = stf.lt[[sam]]@Others$cellColocal[, sig]
+        } else {
+          meta = stf.lt[[sam]]@GsetSig$CuratedSig$Immune$TLS[, sig] 
+        }
+        names(meta) <- paste0(sam, ".", rownames(stf.lt[[sam]]@Position))
+    SpotVisualize(pos = stf.lt[[sam]]@Position,
+                  meta = Norm01(meta),
+                  limits = c(0,1),
+                  size = 5,
+                  savefile = paste0(savedir, "/", sig ,".pdf"),
+                  title = sig,
+                  scale_y_reverse = T,
+                  p.width = 7, p.height = 7,
+                  num.low = "#0077b6", num.mid = "lightyellow", num.high = "#c32f27")
+  }
+}
+# LR interaction
+for(sam in names(Spatial.list)[7:8]){
+  print(sam)
+  expr <- GetAssayData(object = Spatial.list[[sam]],
+                       assay = "SCT",
+                       slot = "data")
+  expr <- as.matrix(expr)
+  # Ligand-receptor interaction
+  LR_expression <- BuildLRExprssion(Expr = expr,
+                                  st_pos = stf.lt[[sam]]@Position,
+                                  LR_input = LR_input,
+                                  do.dist = T,
+                                  r.dist = 4,
+                                  long.dist.method = "weighted",
+                                  adjust = 2,
+                                  na.rm = T)
+LRscore <- CalLRIScore(interaction_input = interaction_input,
+                       LR_expression = LR_expression,
+                       na.rm = T, 
+                       p = 3, # parallel
+                       verbose = T)
+  stf.lt[[sam]]@LRscore <- LRscore
+}
+saveRDS(stf.lt, paste0(outdir, "stf.lt.rds"))
+#
+# BayesSpace cluster
+for (sam in names(Spatial.list)[7:8]) {
+  # se_cluster <- length(unique(Spatial.list[[sam]]$seurat_clusters))
+  # start <- ifelse((se_cluster - 6) < 3, 3, se_cluster - 6)
+  # qs <- seq(start, se_cluster + 6)
+  # print(qs)
+  # sce <- BayesCluster(st = Spatial.list[[sam]],
+  #                     assay = "RNA",
+  #                     platfrom = "ST",
+  #                     outdir = paste0(outdir, "/BayesSpace/qplot/", sam, "_"),
+  #                     num.clu = NULL,
+  #                     qs = qs,
+  #                     verbose = T)
+  # saveRDS(sce, paste0(outdir, "/BayesSpace/sce/", sam, "_sce.rds"))
+  sce <- readRDS(paste0(outdir, "/BayesSpace/sce/", sam, "_sce.rds"))
+  stf.lt[[sam]]@Annotation <- data.frame(row.names = rownames(stf.lt[[sam]]@Position))
+  stf.lt[[sam]]@Annotation[, "seurat_clusters"] <- Spatial.list[[sam]]$seurat_clusters
+  stf.lt[[sam]]@Annotation[, "bayes_cluster"] <- sce@colData@listData$spatial.cluster
+  #table(stf@Annotation[, "bayes_cluster"])
+}
+for (sam in names(Spatial.list)[7:8]) {
+  stf.lt[[sam]]@Annotation[, "patho_anno"] <- Spatial.list[[sam]]$label
+}
+for (sam in names(stf.lt)[8]) {
+  #for (i in c("bayes_cluster", "seurat_clusters", "patho_anno")) {
+  for (i in c("seurat_clusters")) {
+    anno <- as.character(stf.lt[[sam]]@Annotation[, i])
+    anno <- paste0("domain_", anno)
+    col <- LabelMapcolor(labels = as.character(anno), assgin.col = c("domain_6" = "#f4a261"))
+    if (! dir.exists(paste0(outdir, "/ST_cluster/", i))) {
+      dir.create(paste0(outdir, "/ST_cluster/", i), recursive = T)
+    }
+    SpotVisualize(pos = stf.lt[[sam]]@Position,
+                  meta = anno,
+                  savefile = paste0(outdir, "/ST_cluster/", i, "/", sam, "_cluster.pdf"),
+                  p.height = 7, p.width = 7,
+                  size = 5,
+                  scale_y_reverse = T,
+                  cha.col = col,
+                  title = i)
+  }
+}
+
+# saveRDS(stf.lt, paste0(outdir, "stf.lt.rds"))
+# cl = makeCluster(5)
+# registerDoParallel(cl)
+TLS.fea <- foreach(sam = names(stf.lt)[7:8]) %do% {
+  CalTLSfea(stf = stf.lt[[sam]],
+            cluster = stf.lt[[sam]]@Annotation$bayes_cluster,
+            r.dist = 2,
+            method = "weighted",
+            adjust = 2
+            )
+}
+# stopImplicitCluster()
+# stopCluster(cl)
+names(TLS.fea) <- names(stf.lt)[7:8]
+saveRDS(TLS.fea, paste0(outdir, "TLS/TLS.fea.rds"))
+# plot
+for (sam in names(TLS.fea)){
+  meta <- TLS.fea[[sam]]$TLS.score
+  stf.lt[[sam]]@Annotation$TLSpred <- meta
+  SpotVisualize(pos = stf.lt[[sam]]@Position,
+                meta = Norm01(meta),
+                size = 5, p.width = 7, p.height = 7,
+                title = "TLS score",
+                num.low = "#336699",
+                limits = c(0, 1),
+                scale_y_reverse = T,
+                savefile = paste0(outdir, "TLS/TLS_score/", sam, "/TLS.score.pdf")
+                )
+  for (sig in c("orig.fea", "unit.fea", "signi.fea")) {
+    savefile <- paste0(outdir, "TLS/TLS_score/", sam, "/", sig)
+    if (! dir.exists(savefile)) {
+      dir.create(savefile, recursive = T)
+    }
+    for (fea in colnames(TLS.fea[[sam]]$signi.fea)){
+      meta <- TLS.fea[[sam]][[sig]][, fea]
+      SpotVisualize(pos = stf.lt[[sam]]@Position,
+                    meta = Norm01(meta),
+                    size = 5, p.width = 7, p.height = 7,
+                    title = fea,
+                    num.low = "#336699",
+                    limits = c(0, 1),
+                    scale_y_reverse = T,
+                    savefile = paste0(savefile, "/", gsub("\\/", ".",fea), ".pdf"))
+    }
+  }
+}
+for (sam in names(TLS.fea)){
+  data <- data.frame(anno = stf.lt[[sam]]@Annotation$patho_anno,
+                TLS.score = TLS.fea[[sam]]$TLS.score)
+  col <- LabelMapcolor(sort(as.character(data[, "anno"])), assgin.col = c("immune infiltrate" = "#f4a261"))
+  pdf(paste0(outdir, "TLS/TLS_score/", sam, "/boxplot_TLS_pathoAnno.pdf"), width = 6, height = 4)
+  plot <- ggplot(data, aes(x = anno, y = TLS.score, fill = anno)) + geom_boxplot() + theme_bw() + 
+    theme(panel.grid.major=element_blank(), text = element_text(size = 18), 
+          axis.title = element_text(size = 16), axis.text.x = element_blank()) +
+    scale_fill_manual(values = col)
+  print(plot)
+  dev.off()
+}
+sam <- "H1"
+sam <- "G2"
+a <- stf.lt[[sam]]@Annotation$patho_anno
+wilcox.test(TLS.fea[[sam]]$TLS.score[a=="immune infiltrate"], TLS.fea[[sam]]$TLS.score[a!= "immune infiltrate"])
+
+# #TLS.fea <- readRDS(paste0(outdir, "TLS/TLS.fea.rds"))
+# model <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TLS/model.final.rds")
+# pred.lt <- list()
+# for(sam in names(TLS.fea)){
+#   xdata <- as.matrix(TLS.fea[[sam]]$sig.fea)
+#   xdata <- xdata[, intersect(colnames(xdata), model$feature_names)]
+#   add.fea <- setdiff(model$feature_names, colnames(xdata))
+#   if (length(add.fea) > 0){
+#    xdata <- cbind(xdata, matrix(0, nrow = nrow(xdata), ncol = length(add.fea),
+#          dimnames = list(rownames(xdata), add.fea)))
+#   }
+#   xdata <- xdata[, model$feature_names]
+#   xgbData <- xgb.DMatrix(data = xdata)
+#   pred_test <- predict(model, xgbData)
+#   names(pred_test) <- rownames(xdata)
+#   pred.lt[[sam]] <- pred_test
+#   stf.lt[[sam]]@Annotation[, "TLSpred"] <- pred_test
+#   pdf(paste0(outdir, "TLS/", sam, ".pdf"), width = 7, height = 5.5)
+#     SpotVisualize(pos = stf.lt[[sam]]@Position, 
+#     meta = pred_test,size = 5, scale_y_reverse = T, limits = c(0,1)) 
+#     dev.off()
+# }
+# saveRDS(stf.lt, paste0(outdir, "stf.lt.rds"))
+# saveRDS(pred.lt, paste0(outdir, "pred.lt.rds"))
+#stf.lt <- readRDS(paste0(outdir, "stf.lt.rds"))
+# TLS in each cluster
+sam = "G2"
+sam = "H1"
+# data <- stf.lt[[sam]]@Annotation[, c("seurat_clusters", "TLSpred")]
+#   colnames(data) <- c("cluster", "TLS.score")
+#   col <- LabelMapcolor(as.character(data$cluster), assgin.col = c("3" = "#f4a261"))
+#   pdf(paste0(outdir, "TLS/", sam, "_TLS_cluster.pdf"), width = 6, height = 4)
+#   plot <- ggplot(data, aes(x = cluster, y = TLS.score, fill = cluster)) + geom_boxplot() + theme_bw() + 
+#     theme(panel.grid.major=element_blank(), text = element_text(size = 18), axis.title = element_text(size = 16)) +
+#     scale_fill_manual(values = col)
+#   print(plot)
+#   dev.off()
+saveRDS(stf.lt, paste0(outdir, "stf.lt.rds"))
+stf.lt <- readRDS(paste0(outdir, "stf.lt.rds"))
+# TNI regions
+for (sam in names(Spatial.list)[7:8]) {
+  print(sam)
+  if (!dir.exists(paste0(outdir, "/TN_interface/", sam))) {
+    dir.create(paste0(outdir, "/TN_interface/", sam))
+  }
+  cell.abun <- read.table(paste0("/home/chengxj/ST_scRNAseq/BreastEGA8031/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  abun.all <- log2(rowSums(cell.abun)+1)
+  abun.all <- abun.all/max(abun.all)
+  cell.abun <- cell.abun/rowSums(cell.abun)
+  ES <- rowSums(cell.abun[, c("Cancer.Cycling","Cancer.Her2.SC")])
+  ES <- ES*abun.all
+  ES <- ES/max(ES)
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = ES,
+                #savefile = paste0(outdir, "/TN_interface/", sam, "/tumor_abundance.pdf"),
+                #limits = c(0, 1),
+                scale_y_reverse = T,
+                p.height = 8, p.width = 8, size = 3.5,
+                num.high = "#a4161a", num.mid = "#fcf5c7", num.low = "#0077b6",
+                title = "Tumor abundance")
+  edge_score <- TedgeScore(ES = ES,
+                           st_pos = stf.lt[[sam]]@Position,
+                           cluster = stf.lt[[sam]]@Annotation$bayes_cluster,
+                           r.dist = 2)
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = edge_score,
+                savefile = paste0(outdir, "/TN_interface/", sam, "/edge_score.pdf"),
+                limits = c(0,0.5),
+                p.height = 8, p.width = 8,#size = 2.8,
+                num.high = "#a4161a",  num.mid = "#e5614b", num.low = "#ced4da", title = "Edge.score")
+  stf.lt[[sam]]@Annotation[, "edge_score"] <- edge_score[rownames(stf.lt[[sam]]@Position)]
+  # define the boundary spots using edge_score
+}
+# phenotype score
+# cox plot 
+library(survival)
+library(survminer)
+cancer <- "BRCA"
+nmf.lt <- readRDS(paste0("~/ST_scRNAseq/Files/TCGA/TCGA_NMF/", cancer, "/nmf.lt.rds"))
+#
+dataset <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/TCGA_BRCA.rds"))
+names(dataset)[1:3] <- str_split_fixed(names(dataset)[1:3], "\\.", 3)[, 3]
+Expr_TPM <- dataset[["htseq_log2TPM"]]
+# phenotype
+phenotype <- as.data.frame(dataset$survival.tsv)
+rownames(phenotype) <- phenotype$sample
+phenotype <- phenotype[, c("OS", "OS.time")]
+colnames(phenotype) <- c("status", "time")
+phenotype$time <- phenotype$time/(365.24/12) %>% round(4)
+for(type in c("pos", "neg")) {
+  savedir <- paste0(outdir, "/PhenoScore/", type, "/SurvPlot/")
+  if (! dir.exists(savedir)){
+    dir.create(savedir, recursive = T) 
+  }
+  best_rank <- nmf.lt[[type]]$nmf$best_rank
+  nmf <- nmf.lt[[type]]$nmf$nmf$fit[[best_rank]]
+  H <- nmf@fit@H
+  for (i in rownames(H)) {
+    group <- ifelse(H[i,] > median(H[i,]), "High_Score", "Low_Score")
+    data <- merge(phenotype, data.frame(group), by = 0)
+    fit_os <- survfit(Surv(time, status) ~ group, data = data)
+    pdf(file = paste0(savedir, i, "_surv.pdf"),height = 6,width = 6, onefile = F)
+    plot <- ggsurvplot(fit = fit_os, data = data, pval=TRUE, legend.title = paste0(type, "_", i), legend = c(0.8,0.9), palette =c("#c32f27", "#336699"),
+                       size=1.5, pval.size=7, #legend.labs=c(paste("High (n=",num["High"],")",sep=""),paste("Low (n=",num["Low"],")",sep="")),
+                       # xlab="Months",ylab="Probability of overall survival",
+                    ggtheme=theme(text = element_text(size=19), legend.text = element_text(size=16), 
+                                  axis.text = element_text(color="black",size=20),legend.direction = "vertical",
+                                  panel.background=element_rect(fill='transparent'), 
+                                  axis.line=element_line(color="black",size=0.6),plot.margin=unit(rep(1.5,4), 'lines')))
+    print(plot)
+    dev.off()
+  }
+}
+# prediction in ST
+for(type in c("pos", "neg")) {
+  savedir <- paste0(outdir, "/PhenoScore/", type,"/PredinST/")
+  if (! dir.exists(savedir)){
+    dir.create(savedir, recursive = T) 
+  }
+  # best_rank <- nmf.lt[[type]]$nmf$best_rank
+  # nmf <- nmf.lt[[type]]$nmf$nmf$fit[[best_rank]]
+  for (sam in names(Spatial.list)[7:8]) {
+    print(sam)
+    # nmf_pred <- PredNMFinST(st = Spatial.list[[sam]],
+    #                         W = nmf@fit@W,
+    #                         assay = "SCT",
+    #                         slot = "data",
+    #                         plotfile = NULL) 
+    nmf_pred <- readRDS(paste0(savedir, sam, "_nmf_pred.rds"))
+    H = nmf_pred@fit@H
+    pdf(paste0(savedir, sam, "_FactorsST.pdf"), height = 6)
+    par(mfrow=c(nrow(H),1))
+    for(i in rownames(H)){
+      p <- SpotVisualize(Spatial.list[[sam]], meta = Norm01(as.numeric(H[i,])), size = 5.5,
+                         limits = c(0,1),return = T, title = i, num.mid = "#fff3b0", 
+                         scale_y_reverse = T)
+      print(p)
+    }
+    dev.off()
+    rownames(H) <- paste0(type, "_", rownames(H))
+    if (ncol(stf.lt[[sam]]@PhenoScore) == 0) {
+      stf.lt[[sam]]@PhenoScore <- data.frame(t(H)) 
+    } else {
+      stf.lt[[sam]]@PhenoScore <- cbind(stf.lt[[sam]]@PhenoScore, data.frame(t(H))) 
+    }
+    saveRDS(nmf_pred, paste0(savedir, sam, "_nmf_pred.rds"))
+  }
+}
+saveRDS(stf.lt, paste0(outdir, "stf.lt.rds"))
+# plot correlation between TLS score and cox pos factor 4
+# pdf(paste0(outdir, "/PhenoScore/pos/", sam, "_TLS_factor4_corr.pdf"))
+# x = stf.lt[[sam]]@PhenoScore[, "pos_Factor_4"]
+# y = stf.lt[[sam]]@Annotation$TLSpred
+# plot(x, y)
+# abline(lm(y ~ x), col = "red", lwd = 3)
+# dev.off()
+## boxplot of phenotype score in clusters
+library(rstatix)
+library(ggpubr)
+# sam = "H1"
+sam = "G2"
+score <- stf.lt[[sam]]@PhenoScore
+score <- apply(score, 2, Norm01)
+data <- data.frame(factor = score[, "pos_Factor_4"], cluster = stf.lt[[sam]]@Annotation$seurat_clusters)
+pdf(paste0(outdir, "/PhenoScore/pos/", sam, "_cluster_factor4_boxplot.pdf"), width = 5, height = 4)
+col <- LabelMapcolor(as.character(data$cluster), assgin.col = c("3" = "#f4a261"))
+ggplot(data = data,aes(x = cluster, y = factor)) + 
+  geom_boxplot(aes(fill = cluster))  + theme_bw() + 
+  scale_fill_manual(values = col) + 
+  theme(text = element_text(size = 18), panel.grid.major=element_blank()) 
+dev.off()
+
+# Feature selection
+used.fea <- unlist(stf@GsetSig, recursive = F, use.names = T)
+used.fea <- unlist(used.fea, recursive = F, use.names = T)
+used.fea <- cbind(bind_cols(stf@GsetSig$MSigDB),bind_cols(used.fea))
+rownames(used.fea) <- rownames(stf@Position)
+used.fea <- t(used.fea)
+BounFea_auc <- PhenoAssoFeatures(data = used.fea,
+                             phenotype = stf@Annotation$boun_reg,
+                             method = "auc",
+                             auc.power = 0.5)
+# selecting phenotype-asscotiated genes
+g.pt <- rowSums(expr > 0)/ncol(expr) > 0.1
+used.gene.exp <- expr[g.pt,]
+diffgene_auc <- PhenoAssoFeatures(data = used.gene.exp,
+                                  phenotype = stf@Annotation$boun_reg,
+                                  method = "auc",
+                                  auc.power = 0.5,
+                                  n_workers = 3)
+diffgene_cor <- PhenoAssoFeatures(data = used.gene.exp,
+                                  phenotype = as.numeric(factor(stf@Annotation$boun_reg)),
+                                  method = "cor",
+                                  p.adj = T)
+diffgene_deseq2 <- PhenoAssoFeatures(data = as.matrix(st@assays$Spatial@counts),
+                                  phenotype = stf@Annotation$boun_reg,
+                                  method = "deseq2",
+                                  deseq2_contrast = c("group", "boun", "nonboun"),
+                                  p.adj = T)
+diffgene_glm <- PhenoAssoFeatures(data = used.gene.exp,
+                                  phenotype = factor(stf@Annotation$boun_reg),
+                                  method = "glm",
+                                  family = "binomial",
+                                  p.adj = T)
+save(list = ls(all.names = T),
+     file = paste0(outdir, "/pipeline.RData"))

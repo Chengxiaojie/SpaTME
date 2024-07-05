@@ -1,0 +1,129 @@
+# Find neighbors for each spot in given cluster
+FindNeispots <- function(st_pos, 
+                         cluster = NULL, 
+                         r.dist = 2, 
+                         return.list = T){
+  dist.mtrx <- as.matrix(dist(st_pos)) %>% 
+    round(., digits = 2)
+  spot.nei <- foreach(i = rownames(dist.mtrx), .combine = "rbind") %do% {
+    d <- dist.mtrx[i, ]
+    data.frame(spot1 = i, 
+          spot2 = rownames(dist.mtrx)[which(d <= r.dist)],
+          dist = d[d <= r.dist])
+  }
+  rownames(spot.nei) <- NULL
+  if ( ! is.null(cluster)) {
+    if (is.null(names(cluster))) {
+      names(cluster) <- rownames(st_pos) 
+    }
+    spot.nei <- spot.nei[cluster[spot.nei$spot1] == cluster[spot.nei$spot2],]
+  }
+  if ( return.list) {
+    spot.nei <- split(x = spot.nei$spot2, 
+                      f = spot.nei$spot1)
+    }
+  return(spot.nei)
+}
+KernelWeight <- function(d,
+                         adjust = 1){
+  if (length(d) == 1) {
+    weight = 1
+  } else {
+    sd <- adjust * max(d)/3  # d = 3En = 3sd; sd != 0
+    weight <- dnorm(d, sd = sd) %>% setNames(., d)
+    # weight sum keep to 1
+    weight <- weight/sum(weight)
+  }
+  return(weight)
+}
+RegFeaEnrich <- function(data, 
+                         st_pos, 
+                         cluster = NULL,
+                         r.dist = 2, 
+                         method = "weighted", 
+                         layer.method = "mean",
+                         adjust = 2,
+                         verbose = T){
+  # data: data.frame
+  # st_pos: data frame with two columns, x and y coordinate, rownames are consistent with data
+  data <- data.frame(data, check.names = F)
+  rownames(data) <- rownames(st_pos)
+  # if ( ! all(rownames(data) == rownames(st_pos))){
+  #   stop("Rownames of data and st_pos must be same")
+  # }
+  nei.pairs <- FindNeispots(st_pos = st_pos,
+                            r.dist = r.dist,
+                            cluster = cluster,
+                            return.list = F)# calculating Euclidean Distance
+  dist <- nei.pairs[, "dist"]
+  names(dist) <- nei.pairs[, "spot2"]
+  d.lt <- split(x = as.factor(dist),
+                f = nei.pairs[, "spot1"])
+  #
+  if (method == "weighted") {
+    uniq.d <- unique(as.numeric(dist))
+    weight <- KernelWeight(d = uniq.d,
+                            adjust = adjust)
+  }
+  res <- UnitEnrich(data = data,
+                     d.lt = d.lt,
+                     method = method,
+                     weight = weight,
+                    layer.method = layer.method,
+                    verbose = verbose)
+  rownames(res) <- rownames(data)
+  return(res)
+}
+## calculating enriched value in unit region
+UnitEnrich <- function(data, 
+                       d.lt, 
+                       method = "mean",
+                       weight = NULL,
+                       layer.method = "mean",
+                       verbose = F
+                       ){
+  # data , values need to be calculated in given region, can be vecter, matrix or data frame
+  # d, spot dist to center spot, named by spot names. names of d must exsit in rownames of data
+  # weight, weight value named by dist
+  data <- data.frame(data, check.names = F)
+  if (verbose) {
+    pb <- txtProgressBar(min = 0,
+                         max = length(d.lt),
+                         style = 3)
+    i = 0
+  }
+  if (method == "mean") {
+    es <- foreach(d = d.lt, .combine = "rbind") %do% {
+      if (verbose) {
+        i = i + 1
+        setTxtProgressBar(pb = pb, value = i)
+      }
+      colMeans(data[names(d),, drop = F])
+    }
+  }
+  if (method == "weighted") {
+    if (is.null(weight)) {
+      stop("weight param must be provided for weighted method !")
+    }
+    fun <- switch(layer.method,
+                  "mean" = mean,
+                  "sum" = sum)
+    es <- foreach(d = d.lt, .combine = "rbind") %do% {
+      score <- apply(data[names(d), , drop = F], 2, function(x){
+        d_mean <- tapply(x, d, FUN = fun)
+        d_mean[is.na(d_mean)] <- 0
+        d_mean %*% weight
+      })
+      if (verbose) {
+        i = i + 1
+        setTxtProgressBar(pb = pb, value = i)
+      }
+      return(score)
+    }
+  }
+  if (verbose) {
+    close(con = pb)
+  }
+  rownames(es) <- names(d.lt)
+  return(es)
+}

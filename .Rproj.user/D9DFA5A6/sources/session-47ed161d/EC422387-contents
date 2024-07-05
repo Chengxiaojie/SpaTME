@@ -1,0 +1,288 @@
+# Thu Jan  4 00:42:55 2024 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project:
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/base.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/ST_features.2.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/unit.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+outdir <- '/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TLS/TLS_Score/'
+# load data
+stf.lt <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/pipeline/stf.lt.rds")
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+# add TLS ano to TLS negatieve sample ffpe_c_10
+Spatial.list$GSM5924034_ffpe_c_10 <- AddMetaData(Spatial.list$GSM5924034_ffpe_c_10,
+                                                 metadata = rep("NO_TLS", ncol(Spatial.list$GSM5924034_ffpe_c_10)),
+                                                 col.name = "TLSanno")
+# # features used to predict TLS
+# set size of samples
+sam.size <- rep(2.5,24)
+names(sam.size) <- names(Spatial.list)
+sam.size[c("GSM5924043_frozen_a_3","GSM5924050_frozen_c_2")] <- 3.5
+sam.size[c("GSM5924050_frozen_c_2","GSM5924049_frozen_b_18", "GSM5924038_ffpe_c_36","GSM5924042_frozen_a_1")] <- 3
+# TLS label
+TLSanno <- c()
+TLS.sams <- c()
+TLS.group <- c()
+for(sam in names(Spatial.list)){
+  if("TLSanno" %in% colnames(Spatial.list[[sam]]@meta.data)){
+    anno <- Spatial.list[[sam]]$TLSanno
+    anno[nchar(anno)==0] = "NO_TLS"
+    # some nonTLS spot lost label
+    anno[is.na(anno)] = "NO_TLS"
+    TLSanno[TLSanno=="T_agg"] = "NO_TLS"
+    SpotVisualize(Spatial.list[[sam]],
+                  meta = anno, p.width = 8, p.height = 7,
+                  size = sam.size[sam],
+                  title = str_split_fixed(sam, "_", 2)[,2],
+                  plot.title = element_text(hjust = 0.5, size = 24),
+                  cha.col = c(TLS = "#c9a227", NO_TLS = "#ced4da"),
+                  savefile = paste0(outdir, "Figures/TLSanno/", sam, ".pdf"))
+    # st <- AddMetaData(Spatial.list[[sam]], metadata = anno, col.name = "TLSanno")
+    # pdf(paste0(outdir, "Figures/TLSanno_image/", sam, ".pdf"))
+    # print(SpatialPlot(st, group.by = "TLSanno", pt.size.factor = 1.2, cols = c(TLS = "#0077b6", NO_TLS = "grey")))
+    # dev.off()
+  }
+  else{
+    #print(sam)
+    anno <- rep("out", ncol(Spatial.list[[sam]]))
+  }
+  if(any(anno=="TLS")){
+    TLS.sams <- c(TLS.sams, sam)
+    group <- Spatial.list[[sam]]$TLS.group
+    names(group) <- paste0(sam, ".", colnames(Spatial.list[[sam]]))
+    TLS.group <- c(TLS.group, group)
+    col <- LabelMapcolor(group, assgin.col = c(Non = "grey"))
+    # SpotVisualize(Spatial.list[[sam]], 
+    #               meta = group,
+    #               cha.col = col,
+    #               size = sam.size[sam],
+    #               savefile = paste0(outdir, "Figures/TLSgroup/", sam, ".pdf"))
+    
+  }
+  names(anno) <- paste0(sam, ".", colnames(Spatial.list[[sam]]))
+  TLSanno <- c(anno, TLSanno)
+}
+TLS.neg <- setdiff(names(Spatial.list), TLS.sams)
+# TLS distribution in samples
+TLS.dis <- aggregate(TLSanno, by = list(str_split_fixed(names(TLSanno), "\\.", 2)[,1], TLSanno), length) %>%
+  setNames(c("samples", "TLS","Number"))
+TLS.dis$samples <- str_split_fixed(TLS.dis$samples, "_", 2)[,2]
+TLS.dis$TLS <- factor(TLS.dis$TLS, levels = c("TLS", "NO_TLS"))
+TLS.dis$samples <- factor(TLS.dis$samples, levels = str_split_fixed(c(TLS.sams, TLS.neg),"_", 2)[,2])
+pdf(paste0(outdir, "Figures/TLS_distribution.pdf"), width = 8, height = 3.5)
+ggplot(TLS.dis, aes(x = samples, y = Number, fill = TLS)) +
+  geom_bar(position = "fill", stat = "identity") + 
+  geom_col(width = 0.8) +
+  theme(panel.background = element_blank(), 
+        text = element_text(size = 14),
+        axis.line = element_line(colour = "black"), 
+        axis.text.x = element_text(angle = 45, vjust = 0.8, hjust = 0.8)) +
+  scale_fill_manual(values = c(TLS = "#c9a227", NO_TLS = "#ced4da"))
+dev.off()
+##
+library(doParallel)
+cl = makeCluster(4)
+registerDoParallel(cl)
+TLS.fea <- foreach(sam = names(stf.lt)) %dopar% {
+  print(sam)
+  stf = stf.lt[[sam]]
+  res <- CalTLSfea(stf = stf,
+                   cluster = stf@Annotation$bayes_cluster,
+                   r.dist = 4,
+                   method = "weighted",
+                   adjust = 2)
+  return(res)
+}
+names(TLS.fea) <- names(stf.lt)
+stopImplicitCluster()
+stopCluster(cl)
+#saveRDS(TLS.fea, paste0(outdir, "TLS.fea.rds"))
+########################### Thu Jan  4 16:18:43 2024 ###########################
+##
+library(PRROC)
+
+compare_fea_prauc <- list()
+base.line <- c()
+TLS.score_prauc <- c()
+for (sam in names(Spatial.list)) {
+  ydata <- stf.lt[[sam]]@Annotation$TLS_anno
+  ydata <- as.numeric(factor(ydata))-1
+  # baseline
+  base.line[sam] <- round(table(ydata)["1"]/length(ydata), 2)
+  compare_fea_prauc[[sam]] <- matrix(nrow = 3, ncol = 3)
+  rownames(compare_fea_prauc[[sam]]) <- c("orig.fea", "unit.fea", "signi.fea")
+  colnames(compare_fea_prauc[[sam]]) <- colnames(TLS.fea[[sam]]$orig.fea)
+  for (sig in c("orig.fea", "unit.fea", "signi.fea")){
+    # savefile <- paste0(outdir, "Figures/", sam, "/", sig, "/")
+    # if (! dir.exists(savefile)){
+    #   dir.create(savefile, recursive = T)
+    # }
+    comb.fea <- TLS.fea[[sam]][[sig]] 
+    for( fea in colnames(comb.fea)) {
+      meta <- comb.fea[, fea]
+      if (sd(meta) == 0) {
+        compare_fea_prauc[[sam]][sig, fea] <- 0
+      } else{
+        pr <- pr.curve(scores.class0 = meta, weights.class0 = ydata, curve = T)
+        pr <- round(pr$auc.integral, digits = 2) 
+        compare_fea_prauc[[sam]][sig, fea] <- pr
+        # SpotVisualize(pos = stf.lt[[sam]]@Position,
+        #               meta = Norm01(meta),
+        #               size = sam.size[sam], p.width = 8, p.height = 8,
+        #               title = paste0("nprAUC: ", pr),
+        #               num.low = "#336699",
+        #               limits = c(0, 1),
+        #               savefile = paste0(savefile, "/", gsub("\\/", ".",fea), ".pdf"))
+      }
+    }
+  }
+  # for TLS.score
+  meta <- TLS.fea[[sam]]$TLS.score
+  pr <- pr.curve(scores.class0 = meta, weights.class0 = ydata, curve = T)
+  TLS.score_prauc[sam] <- round(pr$auc.integral, digits = 2) 
+  SpotVisualize(pos = stf.lt[[sam]]@Position,
+                meta = meta,
+                size = sam.size[sam], p.width = 8, p.height = 8,
+                title = paste0("prAUC: ", TLS.score_prauc[sam]),
+                num.low = "#336699",
+                limits = c(0, 1),
+                plot.title = element_text(hjust = 0.5, size = 22),
+                savefile = paste0(outdir, "Figures/", sam, "/TLS.score.pdf"))
+}
+# plot prauc of orig/unit fea for all samples
+plot.list <- list()
+n <- 0
+for(sam in TLS.sams){
+  n <- n + 1
+  data <- compare_fea_prauc[[sam]]
+  data <- rbind(data[-3,], baseline = base.line[sam])
+  data <- reshape2::melt(data)
+  colnames(data) <- c("type", "feature", "prAUC")
+  #pdf(paste0("~/ST_scRNAseq/Files/TLS/Figures/", sam, "/compare_fea_prauc.pdf"), height = 4.5, width = 4)
+  p <- ggplot(data) +
+    geom_line(data = data,
+              aes(x = feature, y = prAUC, colour = type, group = type)) +
+    theme_bw() +
+    labs(title = str_split_fixed(sam, "_", 2)[,2]) +
+    theme(panel.grid=element_blank(), text = element_text(size = 12),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank()) +
+    #axis.text.x = element_text(angle = 60, vjust = 1, hjust = 1)) +
+    geom_point(data = data,
+               aes(x = feature, y = prAUC, colour = type, group = type)) +
+    scale_color_manual(values = LabelMapcolor(unique(data$type), 
+                                              assgin.col = c("baseline" = "grey", "orig.fea" = "#679436", "unit.fea" = "#f4a261")))
+  # if (n <16){
+  #   p <- p + theme(axis.text.x = element_blank())
+  # }
+  plot.list[[sam]] <- p
+  #dev.off()
+}
+pdf("~/ST_scRNAseq/Files/TLS/TLS_Score/Figures/compare_fea_allsamples.pdf", width = 10, height = 12)
+cowplot::plot_grid(plotlist = plot.list, ncol = 3)
+dev.off()
+# plot density plot of unit/signi fea for each sample
+density.lt <- list()
+for(sam in TLS.sams){
+  data <- data.frame(unit.fea = Norm01(TLS.fea[[sam]]$unit.fea$imprint.65sig),
+                     unit.adj.fea = Norm01(TLS.fea[[sam]]$signi.fea$imprint.65sig))
+  data <- reshape2::melt(data)
+  colnames(data) <- c("type", "score")
+  p = ggplot(data, aes(x = score, fill = type)) +
+    geom_density(alpha = 0.5) +
+    theme_bw() +
+    theme(panel.grid=element_blank(), text = element_text(size = 12),
+          axis.text.x = element_text(vjust = 1, hjust = 1)) +
+    labs(title = str_split_fixed(sam, "_", 2)[,2], x = "score", y = "Density") +
+    scale_fill_manual(values = c("unit.adj.fea" = "#336699",  "unit.fea" = "#679436"))
+  density.lt[[sam]] <- p
+}
+pdf("~/ST_scRNAseq/Files/TLS/TLS_Score/Figures/density_unit.fea_allsamples.pdf", width = 10, height = 12)
+cowplot::plot_grid(plotlist = density.lt, ncol = 3)
+dev.off()
+
+# mean of features for all samples
+data <- foreach(res = compare_fea_prauc[TLS.sams], .combine = "rbind") %do% {
+  round(rowMeans(res), 2)
+}
+data <- cbind(data, baseline = base.line[TLS.sams])
+rownames(data) <- str_split_fixed(TLS.sams, "_", 2)[, 2]
+ord1 <- rownames(data[1:10,])[order(data[1:10, "signi.fea"], decreasing = T)]
+ord2 <- rownames(data[11:18,])[order(data[11:18, "signi.fea"], decreasing = T)]
+level <- c(ord1, ord2)
+melt.data <- reshape2::melt(data[, -3])
+colnames(melt.data) <- c("sample", "type", "prAUC")
+melt.data$sample <- factor(melt.data$sample, levels = level)
+data <- cbind(data.frame(data), sample = factor(rownames(data), levels = level))
+pdf("~/ST_scRNAseq/Files/TLS/TLS_Score/Figures/compare_mean.fea_allsamples.pdf", width = 6, height = 3.5)
+ggplot() + geom_segment(data = data,
+                        aes(x = sample, xend = sample, y = signi.fea, yend = orig.fea)) +
+  theme_bw() +
+  theme(panel.grid=element_blank(), text = element_text(size = 13),
+        axis.text.x = element_text(angle = 60, vjust = 1, hjust = 1)) +
+  geom_point(data = melt.data,
+             aes(x = sample, y = prAUC, colour = type, group = type)) +
+  labs(y = "prAUC") +
+  scale_color_manual(values = LabelMapcolor(unique(melt.data$type), 
+                                            assgin.col = c("baseline" = "grey", "TLS.score" = "#f4a261")))
+dev.off()
+#
+# comparing single features with aggregated feature
+data <- Reduce(rbind, lapply(compare_fea_prauc[TLS.sams], function(x){x["signi.fea",]}))
+rownames(data) <- TLS.sams
+data <- cbind(data, baseline = base.line[rownames(data)])
+data <- cbind(data, TLS.score = TLS.score_prauc[rownames(data)])
+melt.data <- reshape2::melt(data)
+colnames(melt.data) <- c("sample", "type", "prAUC")
+melt.data$sample <- str_split_fixed(melt.data$sample, "_", 2)[,2]
+melt.data$sample <- factor(melt.data$sample, levels = level)
+pdf("~/ST_scRNAseq/Files/TLS/TLS_Score/Figures/compare_signi.fea_allsamples.pdf", width = 7, height = 4.5)
+ggplot() +
+  geom_line(data = melt.data[melt.data$type %in% c("TLS.score", "baseline", "mean.fea"), ],
+            aes(x = sample, y = prAUC, colour = type, group = type)) +
+  theme_bw() +
+  theme(panel.grid=element_blank(), text = element_text(size = 12),
+        axis.text.x = element_text(angle = 60, vjust = 1, hjust = 1)) +
+  geom_point(data = melt.data,
+             aes(x = sample, y = prAUC, colour = type, group = type)) +
+  scale_color_manual(values = LabelMapcolor(unique(melt.data$type),
+                                            assgin.col = c("baseline" = "grey", "TLS.score" = "#f4a261", "imprint.65sig" = "#87153b")))
+dev.off()
+#
+# # comparing mean of single features with aggregated feature
+data <- cbind(data, mean.fea = round(rowMeans(data[, 1:3]), 2))
+melt.data <- reshape2::melt(data[, 4:6])
+colnames(melt.data) <- c("sample", "type", "prAUC")
+melt.data$sample <- str_split_fixed(melt.data$sample, "_", 2)[,2]
+melt.data$sample <- factor(melt.data$sample, levels = level)
+sample = factor(str_split_fixed(rownames(data), "_", 2)[,2], levels = level)
+data <- data.frame(data)
+data[, "sample"] <- sample
+pdf("~/ST_scRNAseq/Files/TLS/TLS_Score/Figures/compare_mean_signi.fea_allsamples.pdf", width = 6, height = 3.5)
+ggplot() +
+  geom_segment(data = data,
+               aes(x = sample, xend = sample, y = TLS.score, yend = mean.fea)) +
+  theme_bw() +
+  theme(panel.grid=element_blank(), text = element_text(size = 13),
+        axis.text.x = element_text(angle = 60, vjust = 1, hjust = 1)) +
+  geom_point(data = melt.data,
+             aes(x = sample, y = prAUC, colour = type, group = type)) +
+  labs(y = "prAUC") +
+  scale_color_manual(values = LabelMapcolor(unique(melt.data$type), 
+                                            assgin.col = c("baseline" = "grey", "TLS.score" = "#f4a261")))
+dev.off()
+save(list = c("TLSanno", "TLS.sams", "TLS.group", "compare_fea_prauc", "density.lt", "plot.list", "prauc.lt", "TLS.dis", "base.line", "TLS.fea", "TLS.score_prauc"),
+     file = "~/ST_scRNAseq/Files/TLS/TLS_Score/temp.RData")
+
+# export prAUC
+compare_fea_prauc <- compare_fea_prauc[TLS.sams]
+all_prauc <- foreach(sam = names(compare_fea_prauc), .combine = "rbind") %do% {
+  temp <- cbind(rownames(compare_fea_prauc[[sam]]), compare_fea_prauc[[sam]])
+  cbind(sam, temp)
+} 
+ write.csv(all_prauc, "~/ST_scRNAseq/Files/TLS/TLS_Score/all_prauc.csv", row.names = F) 
+ 

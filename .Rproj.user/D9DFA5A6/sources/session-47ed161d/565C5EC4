@@ -1,0 +1,28 @@
+{
+    "id": "565C5EC4",
+    "path": null,
+    "project_path": null,
+    "type": "object_explorer",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1720010459289.0,
+    "source_on_save": false,
+    "relative_order": 11,
+    "properties": {
+        "id": "8f0f212d4d61483c947306c770ad3ced",
+        "name": "TLS.fea",
+        "title": "TLS.fea",
+        "language": "R",
+        "source_window_id": "",
+        "Source": "Source"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 3904937742977474611,
+    "encoding": "",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1720010459289,
+    "read_only": false,
+    "read_only_alternatives": []
+}

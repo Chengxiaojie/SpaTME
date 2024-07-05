@@ -1,0 +1,328 @@
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(ComplexHeatmap)
+library(dplyr)
+library(circlize)
+## visualization functions
+# Heatmap plot for given spatial features
+HeatmapStf <- function(data, rowanno = NULL, colanno = NULL, n.colanno = NULL,
+                       c.rowanno = NULL,  c.colanno = NULL, n.rowanno = NULL, name = "Features",
+                       savefile = NULL, width = 1200, height = 800){
+  if(is.null(c.rowanno)){
+    c.rowanno <- list(rowanno = colorRamp2(c(min(rowanno), 0, max(rowanno)), c("#0077b6", "#e9ecef", "red")))
+    #c.rowanno <-  c(Scissor_neg = "#0077b6", Zero = "#e9ecef", Scissor_pos = "red")
+  }
+  if(is.null(c.colanno)){
+    c.colanno <- colorRamp2(c(min(colanno), 0, max(colanno)), c("#0077b6", "#e9ecef", "red"))
+  }
+  legend_param <- list(title_gp = gpar(fontsize = 18),
+                       labels_gp = gpar(fontsize = 15),
+                       grid_height = unit(6, "mm"))
+  rowAnno <- HeatmapAnnotation(data.frame(rowanno), which = "row",
+                               col = list(rowanno = c.rowanno),
+                               annotation_width = 2,
+                               annotation_legend_param = append(legend_param, list(title = n.rowanno)))
+  colAnno <- HeatmapAnnotation(data.frame(colanno), which = "column",
+                               col = list(colanno = c.colanno),
+                               annotation_legend_param = append(legend_param, list(title = n.colanno)))
+  plot = Heatmap(data.frame(data),
+                 name = name,
+                 show_row_names = F,
+                 top_annotation = colAnno,
+                 col = colorRamp2(c(min(data), max(data)), c("#f8f9fa",  "#3d5a80")),
+                 heatmap_legend_param = legend_param,
+                 clustering_distance_columns = "pearson",
+                 column_names_gp = gpar(fontsize = 16)) + rowAnno
+  if(! is.null(savefile)){
+    png(savefile, width = width, height = height)
+    print(plot)
+    dev.off()
+  }
+  else{
+    print(plot)
+  }
+}
+# function to visualize ST spot with gene expression, score or clusters
+SpotVisualize <- function(st = NULL , pos = NULL, meta = NULL, feature = NULL, size = 2.5, size.factor = 0.02,
+                          savefile = NULL, return = F, cha.col = NULL, mid.p = NULL,
+                          title = "NULL", legend.name = NULL,p.width = 10, p.height = 10,
+                          num.high = "#c32f27", num.mid = "lightyellow", num.low = "#0077b6",
+                          scale_y_reverse = F, scale_x_reverse = F, limits = NULL, na.col = "#ced4da", ...){
+  # st : seurat object with ST data or position formed by x*y
+  # meta: name of metadata column or vector provided
+  # feature: genes in st
+  # scale.factor is useful when save the plot to pdf
+  # position
+  if (is.null(pos)) {
+    if ( ! is.null(st)) {
+      pos <- st@meta.data[, c("x", "y")]
+    }
+    else {
+      stop("spatial object (st) or pos must be provided !")
+    }
+  }
+  if (! is.null(meta)) {
+    if (length(meta) == 1){
+      if ( ! is.null(st)) {
+        label = st@meta.data[, meta]
+      }
+    } else {
+      label = meta
+    }
+  }
+  if (! is.null(feature)) {
+    if (is.null(st)) {
+      stop(paste0("st object must provided for feature ", feature))
+    } else {
+      label = st@assays$SCT@data[feature,]
+    }
+  }
+  if(is.null(size)){
+    max_num_spots <- max(c(max(pos[, "x"])-min(pos[, "x"])),
+                         c(max(pos[, "y"])-min(pos[, "y"])))
+    min_len <- min(p.width, p.height)
+    size <- min_len/(size.factor*max_num_spots) %>% round(1)
+  }
+  # if col is meta
+  gp = ggplot(data = data.frame(pos, label), aes(x = x, y = y)) +
+    theme_half_open(11, rel_small = 1) + theme_void() +
+    coord_fixed() +
+    labs(title = title, fill = legend.name, color = legend.name) +
+    theme(plot.title = element_text(hjust = 0.5, size = 32),
+          legend.text = element_text(size = 22),
+          legend.title = element_text(size=24)) +
+    theme(...)
+  if (scale_y_reverse) {
+    gp = gp + scale_y_reverse()
+  }
+  if (scale_x_reverse) {
+    gp = gp + scale_x_reverse()
+  }
+  p <- gp + geom_point(aes(colour = label), size = size)
+  if (class(label) == "numeric") {
+    if (is.null(limits)) {
+      limits <- c(min(label[!is.na(label)]), max(label[!is.na(label)]))
+    }
+    if (is.null(mid.p)){
+      mid.p <- (max(limits) + min(limits))/2
+    }
+      p <- p + scale_colour_gradient2(low = num.low, mid = num.mid,
+                                      high = num.high, midpoint = mid.p,limits = limits)
+  }
+  if (class(label) == "character") {
+    if (! is.null(cha.col)) {
+      p <- p + scale_color_manual(values = cha.col, na.value = na.col)
+    }
+  }
+  if (! is.null(savefile)) {
+    pdf(savefile, height = p.height, width = p.width)
+    print(p)
+    dev.off()
+  } else {
+    if (return) {
+      return(p)
+    } else {
+      print(p)
+    }
+  }
+}
+#
+# AbunBounPlot <- function(abun, type,
+#                          st = NULL,
+#                          pos = NULL,size = 2.5,
+#                          TNI.size = 2.2,
+#                          shape = 21,
+#                          stroke = 1.2,
+#                          legend.name = "abun",
+#                          title = "Tumor abundance/Defined TNI",
+#                          savefile = NULL, return = F,
+#                          scale_y_reverse = F,
+#                          scale_x_reverse = F,
+#                          p.width = 10, p.height = 10,
+#                          col.h = "#c32f27", col.m = "lightyellow", col.l = "#0077b6",
+#                          line_col = c("boun" = "black", "nonboun" = NA),
+#                          limits = NULL,
+#                          ...){
+#   # abun: abundance
+#   # type: spot type
+#   if (is.null(pos)) {
+#     if ( ! is.null(st)) {
+#       pos <- st@meta.data[, c("x", "y")]
+#     }
+#     else {
+#       stop("spatial object (st) or pos must be provided !")
+#     }
+#   }
+#   if (is.null(limits)) {
+#     limits <- c(0, max(abun))
+#   }
+#   stroke <- rep(stroke, length(type))
+#   stroke[type == "nonboun"] = NA
+#   size <- rep(size, length(type))
+#   # size[type == "boun"] = TNI.size
+#   size <- factor(size)
+#   gp = ggplot(data = data.frame(pos, abun, type, stroke), aes(x = x, y = y)) +
+#     theme_half_open(11, rel_small = 1) + theme_void() +
+#     labs(title = title, fill = legend.name) +
+#     coord_fixed() +
+#     theme(plot.title = element_text(hjust = 0.5, size = 24),
+#           legend.text = element_text(size = 18),
+#           legend.title = element_text(size=20))+
+#     theme(...)
+#   if (scale_y_reverse) {
+#     gp = gp + scale_y_reverse()
+#   }
+#   if (scale_x_reverse) {
+#     gp = gp + scale_x_reverse()
+#   }
+#   # if (is.null(line_col)) {
+#   #   line_col <- LabelMapcolor(type, assgin.col = c(nonboun = NA))
+#   #   line_col <- line_col[!duplicated(line_col)]
+#   # }
+#   mid.p <- ifelse(is.null(limits), NA, max(limits)/2)
+#   p <- gp + geom_point(aes(color = type, fill = abun, stroke = stroke, size = size),
+#                            shape = shape) +
+#     scale_fill_gradient2(high = col.h, mid = col.m, low = col.l,
+#                          midpoint = mid.p,
+#                          limits = limits) +
+#     scale_color_manual(values = line_col)
+#   if (! is.null(savefile)) {
+#     pdf(savefile, height = p.height, width = p.width)
+#     print(p)
+#     dev.off()
+#   } else {
+#     if (return) {
+#       return(p)
+#     } else {
+#       print(p)
+#     }
+#   }
+# }
+AbunTNIPlot <- function(pos, ES, class, size = 2.5,
+                        color = c(T_boun = "#e85d04", N_boun = "#4f772d"),
+                        shape = 1,
+                        savefile = NULL,
+                        stroke = 0.8,
+                        p.height = 8, p.width = 8,
+                        ...
+                        ){
+  p1 <- SpotVisualize(pos = pos,
+                      meta = ES,
+                      size = size,
+                      return = T,
+                      ...)
+  data <- cbind(pos, Class = class)
+  p2 <- geom_point(data = data[data$Class== names(color)[1],],
+                   aes(x= x, y = y), shape = shape,
+                   fill = color[1],
+                   color = "black", stroke = stroke,
+                   size = size,  show.legend = T)
+  p3 <- geom_point(data = data[data$Class==names(color)[2],],
+                   aes(x= x, y = y), shape = shape,
+                   fill = color[2],
+                   color = "black", stroke = stroke,
+                   size = size, show.legend = T)
+  if(! is.null(savefile)){
+    pdf(savefile, height = p.height, width = p.width)
+    print(p1 + p2 +p3)
+    dev.off()
+  } else {
+    print(p1 + p2 +p3)
+  }
+}
+# visualization of cell proportion
+PlotCellSpot = function(decon_mtrx,
+                        st_pos = NULL,
+                        tarCells = NULL,
+                        savefile,
+                        separate = T,
+                        f.color = c("#0077b6","lightyellow","#c32f27"),
+                        save = T,
+                        e.color = "black",
+                        pie_scale = 0.7,
+                        pie_color = NULL,
+                        size = 5,
+                        size.auto = F,
+                        size.factor = 0.36,
+                        numCol = 4,
+                        p.width = 10,
+                        p.height = 10,
+                        scale_y_reverse = F,
+                        scale_x_reverse = F){
+  if(is.null(st_pos)){
+    # add position x and y
+    st_pos <- str_split_fixed(rownames(decon_mtrx), "x", 2) %>% apply(., 2, as.numeric)
+    colnames(st_pos)= c("x", "y")
+  }
+  gp = ggplot() +
+    theme_half_open(11, rel_small = 1) +
+    coord_fixed() +
+    theme_void()  +
+    theme(text = element_text(hjust = 0.5, size = 20))
+  if(scale_y_reverse){
+    gp = gp + scale_y_reverse()
+  }
+  if(scale_x_reverse){
+    gp = gp + scale_x_reverse()
+  }
+  if(size.auto){
+    max_num_spots <- max(c(max(st_pos[, "x"])-min(st_pos[, "x"])),
+                  c(max(st_pos[, "y"])-min(st_pos[, "y"])))
+    #numRow <- ceiling(length(tarCells)/numCol)
+    size <- size.factor * log2(max_num_spots) %>% round(2)
+  }
+  plotSingle = function(cell, title, type = "pie"){
+    p = gp + labs(title = title)
+    if(type == "pie"){
+      others <- setdiff(colnames(decon_mtrx), cell)
+      if (length(others)){
+        data <- data.frame(decon_mtrx[, cell, drop = F],
+                           others = rowSums(decon_mtrx[, others, drop = F]))
+      } else {
+        data <- decon_mtrx
+      }
+      p = p + scatterpie::geom_scatterpie(data = data.frame(st_pos, data, check.names = F),
+                                          aes(x = x,y = y),
+                                          cols = colnames(data),
+                                          pie_scale = pie_scale,
+                                          color = e.color
+                                          )
+      if ( ! is.null(pie_color)) {
+        p <- p + scale_fill_manual(values = pie_color)
+      }
+    }
+    if(type == "point"){
+      p = p +
+        geom_point(data = data.frame(st_pos, percent = decon_mtrx[, cell]),
+                   aes(x = x, y = y, colour = percent), size = size)
+    }
+    if(length(f.color)>1){
+      p <- p + scale_color_gradientn(values = seq(0,1,0.25),
+                                     colours = f.color)
+    }
+    return(p)
+  }
+  if (is.null(tarCells)) {
+    tarCells <- colnames(decon_mtrx)
+  }
+  if(separate){
+    plot.list = c()
+    for(cell in tarCells){
+      if(cell %in% colnames(decon_mtrx)){
+        plot.list[[cell]] = plotSingle(cell,
+                                       title = cell,
+                                       type = "point")
+      }
+    }
+    plot = cowplot::plot_grid(plotlist = plot.list, ncol = numCol)
+  } else {
+    plot = plotSingle(tarCells, title = "percent for cells", type = "pie")
+  }
+  if(save){
+    pdf(file = savefile, width = p.width, height = p.height)
+    print(plot)
+    dev.off()
+  }
+  else{return(plot)}
+}

@@ -1,0 +1,154 @@
+WARNING: ignoring environment value of R_HOME
+
+Attaching package: ‘dplyr’
+
+The following objects are masked from ‘package:stats’:
+
+    filter, lag
+
+The following objects are masked from ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+Loading required package: registry
+Loading required package: rngtools
+Loading required package: cluster
+NMF - BioConductor layer [OK] | Shared memory capabilities [NO: bigmemory] | Cores 2/2
+  To enable shared memory capabilities, try: install.extras('
+NMF
+')
+
+clusterProfiler v4.6.2  For help: https://yulab-smu.top/biomedical-knowledge-mining-book/
+
+If you use clusterProfiler in published research, please cite:
+T Wu, E Hu, S Xu, M Chen, P Guo, Z Dai, T Feng, L Zhou, W Tang, L Zhan, X Fu, S Liu, X Bo, and G Yu. clusterProfiler 4.0: A universal enrichment tool for interpreting omics data. The Innovation. 2021, 2(3):100141
+
+Attaching package: ‘clusterProfiler’
+
+The following object is masked from ‘package:stats’:
+
+    filter
+
+ReactomePA v1.44.0  For help: https://yulab-smu.top/biomedical-knowledge-mining-book/
+
+If you use ReactomePA in published research, please cite:
+Guangchuang Yu, Qing-Yu He. ReactomePA: an R/Bioconductor package for reactome pathway analysis and visualization. Molecular BioSystems 2016, 12(2):477-479
+The legacy packages maptools, rgdal, and rgeos, underpinning the sp package,
+which was just loaded, will retire in October 2023.
+Please refer to R-spatial evolution reports for details, especially
+https://r-spatial.org/r/2023/05/15/evolution4.html.
+It may be desirable to make the sf package available;
+package maintainers should consider adding sf to Suggests:.
+The sp package is now running under evolution status 2
+     (status 2 uses the sf package in place of rgdal)
+Attaching SeuratObject
+Loading required package: grid
+========================================
+ComplexHeatmap version 2.14.0
+Bioconductor page: http://bioconductor.org/packages/ComplexHeatmap/
+Github page: https://github.com/jokergoo/ComplexHeatmap
+Documentation: http://jokergoo.github.io/ComplexHeatmap-reference
+
+If you use it in published research, please cite either one:
+- Gu, Z. Complex Heatmap Visualization. iMeta 2022.
+- Gu, Z. Complex heatmaps reveal patterns and correlations in multidimensional 
+    genomic data. Bioinformatics 2016.
+
+
+The new InteractiveComplexHeatmap package can directly export static 
+complex heatmaps into an interactive Shiny app with zero effort. Have a try!
+
+This message can be suppressed by:
+  suppressPackageStartupMessages(library(ComplexHeatmap))
+========================================
+
+========================================
+circlize version 0.4.15
+CRAN page: https://cran.r-project.org/package=circlize
+Github page: https://github.com/jokergoo/circlize
+Documentation: https://jokergoo.github.io/circlize_book/book/
+
+If you use it in published research, please cite:
+Gu, Z. circlize implements and enhances circular visualization
+  in R. Bioinformatics 2014.
+
+This message can be suppressed by:
+  suppressPackageStartupMessages(library(circlize))
+========================================
+
+Warning message:
+replacing previous import ‘utils::findMatches’ by ‘S4Vectors::findMatches’ when loading ‘AnnotationDbi’ 
+Loading required package: future
+
+Attaching package: ‘future’
+
+The following object is masked from ‘package:NMF’:
+
+    run
+
+The following object is masked from ‘package:survival’:
+
+    cluster
+
+[1] "KIRC"
+Starting feature selection with method cox ...
+There are 6073 phenotype-related genes
+
+ neg  pos 
+1281 4792 
+starting nmf analysis ···
+[1] "2023-12-08 17:09:16 CST"
+Compute NMF rank= 2  ... + measures ... OK
+Compute NMF rank= 3  ... + measures ... OK
+Compute NMF rank= 4  ... + measures ... OK
+Compute NMF rank= 5  ... + measures ... OK
+Compute NMF rank= 6  ... + measures ... OK
+Compute NMF rank= 7  ... + measures ... OK
+Compute NMF rank= 8  ... + measures ... OK
+Compute NMF rank= 9  ... + measures ... OK
+Compute NMF rank= 10  ... + measures ... OK
+Best rank will be seleted from 2345678910
+Selected rank is :9
+
+'select()' returned 1:1 mapping between keys and columns
+Scale for y is already present.
+Adding another scale for y, which will replace the existing scale.
+starting nmf analysis ···
+[1] "2023-12-08 18:14:38 CST"
+Compute NMF rank= 2  ... + measures ... OK
+Compute NMF rank= 3  ... + measures ... OK
+Compute NMF rank= 4  ... + measures ... OK
+Compute NMF rank= 5  ... + measures ... OK
+Compute NMF rank= 6  ... + measures ... OK
+Compute NMF rank= 7  ... + measures ... OK
+Compute NMF rank= 8  ... + measures ... OK
+Compute NMF rank= 9  ... + measures ... OK
+Compute NMF rank= 10  ... + measures ... OK
+Best rank will be seleted from 2345678910
+Selected rank is :5
+'select()' returned 1:1 mapping between keys and columns
+Scale for y is already present.
+Adding another scale for y, which will replace the existing scale.
+Warning messages:
+1: In dir.create(savedir, recursive = T) :
+  '/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGA_NMF/KIRC/neg' already exists
+2: In dir.create(savedir, recursive = T) :
+  '/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGA_NMF/KIRC/pos' already exists
+Loading required package: ggpubr
+
+Attaching package: ‘ggpubr’
+
+The following object is masked from ‘package:cowplot’:
+
+    get_legend
+
+
+Attaching package: ‘survminer’
+
+The following object is masked from ‘package:survival’:
+
+    myeloma
+
+Warning message:
+The `size` argument of `element_line()` is deprecated as of ggplot2 3.4.0.
+ℹ Please use the `linewidth` argument instead. 

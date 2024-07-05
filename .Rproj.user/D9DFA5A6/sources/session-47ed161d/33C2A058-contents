@@ -1,0 +1,88 @@
+# Mon Nov  7 18:40:32 2022 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project:
+#
+#.libPaths("/NFS_home/NFS_home_2/chengxj/anaconda3/envs/R4.0/lib/R/library")
+
+library("BayesSpace")
+library("SingleCellExperiment")
+library("dplyr") # %>%
+library("stringr")
+library("ggplot2")
+library("doParallel")
+
+setwd("/home/chengxj/ST_scRNAseq/GSE175540")
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+# load data
+ Spatial.list <- readRDS("/home/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+
+# for(sam in names(Spatial.list)){
+#   data <- Spatial.list[[sam]]@assays$Spatial@counts
+#   colData <- Spatial.list[[sam]]@meta.data
+#   pos <- Spatial.list[[sam]]@images[[1]]@coordinates[, c("row", "col")]
+#   #
+#   sce <- SingleCellExperiment(assays = list(counts = data),
+#                               colData = cbind(pos, colData))
+#   sce <- spatialPreprocess(sce, platform = "Visium", n.HVGs = 3000)
+#   # sce <- qTune(sce, qs = seq(2, 20),platform = "Visium")
+#   # pdf(paste("BayesSpace/Figures/", sam, "_bayes.qplot.pdf", sep = ""))
+#   # plot <- qPlot(sce)
+#   # print(plot)
+#   # dev.off()
+#   #print("input q:")
+#   sce <- spatialCluster(sce, q = q.lt[[sam]], platform="Visium", d=15,
+#                                     init.method="mclust", model="t", gamma=3,
+#                                     nrep=10000, burn.in=1000)
+#   bayes.cluster.lt[[sam]] <- sce@colData@listData$spatial.cluster
+#   names(bayes.cluster.lt[[sam]]) <- rownames(sce@colData)
+#   #q <- readline()
+#   saveRDS(sce, paste0("BayesSpace/Temp_RDS/",sam, "_bayes.rds"))
+# }
+
+q.lt <- c(6, 10, 13, 8, 15, 10, 10, 7, 9, 11, 10, 10, 10, 8, 9, 12, 9, 6, 13, 5, 7, 7, 7, 4)
+names(q.lt) <- names(Spatial.list)
+bayes.cluster.lt <- list()
+cl = makeCluster(5)
+registerDoParallel(cl)
+for(sam in names(Spatial.list)){
+  sce = readRDS(paste0("BayesSpace/Temp_RDS/", sam, "_bayes.rds"))
+  set.seed(12)
+  sce <- spatialCluster(sce, q = q.lt[[sam]], platform="Visium", d=20,
+                        init.method="mclust", model="t", gamma=3,
+                        nrep=10000, burn.in=1000)
+  bayes.cluster.lt[[sam]] <- sce@colData@listData$spatial.cluster
+  names(bayes.cluster.lt[[sam]]) <- rownames(sce@colData)
+  saveRDS(sce, paste0("BayesSpace/Temp_RDS/",sam, "_bayes.rds"))
+  #pdf(paste0("BayesSpace/Figures/", sam, "_bayes.cluster_q", q.lt[[sam]],".pdf"), width = 15, height = 12)
+  #clusterPlot(sce)
+  #dev.off()
+}
+stopImplicitCluster()
+stopCluster(cl)
+#saveRDS(bayes.cluster.lt, "BayesSpace/Temp_RDS/bayes.cluster.lt.2.rds")
+# in rstudio
+  bayes.cluster.lt <- readRDS("BayesSpace/Temp_RDS/bayes.cluster.lt.2.rds")
+for(sam in names(Spatial.list)){
+  Spatial.list[[sam]] <- AddMetaData(Spatial.list[[sam]],
+                                metadata = as.factor(bayes.cluster.lt[[sam]][colnames(Spatial.list[[sam]])]),
+                                col.name = "Bayes.cluster")
+  pos <- Spatial.list[[sam]]@images[[1]]@coordinates[, c("row", "col")]
+  SpotVisualize(Spatial.list[[sam]],
+                pos = pos,
+                meta = "Bayes.cluster",
+                title = paste0(sam, "_clusters"),
+                savefile = paste0("BayesSpace/Figures/", sam, "_Bayes.cluster_2.pdf"),
+                size = 4,
+                scale_y_reverse = F)
+# SpotVisualize(Spatial.list[[sam]],
+#               pos = pos,
+#               meta = "seurat_clusters",
+#               title = paste0(sam, "_clusters"),
+#               savefile = paste0("Figures/seurat_cluster/", sam, "_Bayes.cluster",".pdf"),
+#               size = 4,
+#               scale_y_reverse = F)
+}
+#saveRDS(Spatial.list, "Temp_RDS/Spatial.list.RDS")

@@ -1,0 +1,26 @@
+{
+    "id": "2E9AFAB7",
+    "path": "~/ST_scRNAseq/SpaTME/SpaTME/R/TN_interface.R",
+    "project_path": "R/TN_interface.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1719467888202.0,
+    "source_on_save": false,
+    "relative_order": 4,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "143,35",
+        "scrollLine": "132"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1719470394,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1719470394465,
+    "read_only": false,
+    "read_only_alternatives": []
+}

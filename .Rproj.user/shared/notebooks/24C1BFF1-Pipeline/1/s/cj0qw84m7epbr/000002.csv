@@ -1,0 +1,9 @@
+"0","# Bulk RNA-seq expression profiles of KIRC and paired clinical annotations from TCGA were download and preprocessed. 
+Bulk_data <- readRDS(""/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/SpaTME/test_data/TCGA_KIRC.rds"")
+bulk_input <- NMF_bulk_input(data = Bulk_data$Expr_TPM, pt_gene_exp = 0.2, totpm = F,
+                             base_gene_exp = 1, dolog = F)
+asso.genes <- PhenoAssoFeatures(data = bulk_input, phenotype = Bulk_data$phenotype, 
+                                method = ""cox"", p.cut = 0.01)
+"
+"2","/bin/sh: 1: r，: not found
+"

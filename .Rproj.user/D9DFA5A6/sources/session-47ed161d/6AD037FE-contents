@@ -1,0 +1,53 @@
+library(UCSCXenaTools)
+library(dplyr)
+library(stringr)
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+outdir <- "~/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/"
+setwd(outdir)
+options(use_hiplot = TRUE)
+data(XenaData)
+df_todo <- XenaGenerate(subset = XenaHostNames=="gdcHub") %>% 
+  XenaFilter(filterDatasets = "TCGA") %>%
+  XenaFilter(filterDatasets = "htseq_fpkm.tsv|phenotype|survival")
+# download count dataset
+df_todo <- XenaGenerate(subset = XenaHostNames=="gdcHub") %>% 
+  XenaFilter(filterDatasets = "TCGA") %>%
+  XenaFilter(filterDatasets = "htseq_counts.tsv|phenotype|survival")
+XenaQuery(df_todo) %>%
+  XenaDownload() -> xe_download
+cli = XenaPrepare(xe_download)
+# saveRDS(cli, paste0(outdir, "GDC_htseq_fpkm.rds"))
+# saveRDS(cli, paste0(outdir, "GDC_htseq_counts/GDC_htseq_counts.rds"))
+datasets <- readRDS(paste0(outdir, "GDC_htseq_fpkm.rds"))
+cancertypes <- str_split_fixed(names(datasets), "\\.", 3)[, 2] %>% unique()
+# convert ID to symbol
+genetype <- read.table("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/Homo_sapiens.GRCh38.109.gene.txt")
+genetype <- genetype[ ,c(2,4,6)]
+colnames(genetype) <- c("ID", "symbol", "type")
+types <- unique(genetype$type)
+remove.types <- types[grep("pseudogene",types)]
+keep.genes <- genetype[grep("protein_coding|IG_.*_gene|TR_.*_gene", genetype$type),]
+# anno <- fread("~/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/gencode.v22.annotation.gene.probeMap")
+# anno$id <- str_split_fixed(anno$id, "\\.", 2)[,1]
+
+for (cancer in cancertypes) {
+  data <- datasets[grep(cancer, names(datasets))]
+  expr <- data[grep("fpkm", names(data))] %>% 
+    as.data.frame(check.names = F) 
+  # for BRCA
+  # expr <- read.table("TCGA-BRCA.htseq_fpkm.tsv", header = T, row.names = 1, check.names = F)
+  colnames(expr) <- str_split_fixed(colnames(expr), "gz.", 2)[, 2]
+  expr <- expr %>% tibble::column_to_rownames("Ensembl_ID")
+  rownames(expr) <- str_split_fixed(rownames(expr), "\\.", 2)[,1]
+  # convert FPKM to TPM
+  expr <- 2^expr-1
+  expr <- apply(expr, 2, function(x){
+    x <- x*1e6/sum(x)
+    log2(x+1)
+  })
+  expr <- expr[rownames(expr) %in% keep.genes$ID,]
+  rownames(expr) <- keep.genes$symbol[match(rownames(expr), keep.genes$ID)]
+  data[["htseq_log2TPM"]] <- expr
+  saveRDS(data, paste0(outdir, "TCGA_",cancer, ".rds"))
+}

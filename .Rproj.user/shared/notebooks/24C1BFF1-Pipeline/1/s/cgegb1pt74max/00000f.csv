@@ -1,0 +1,15 @@
+"0","sce <- BayesCluster(st = st, assay = ""Spatial"",platfrom = ""Visium"",
+                    qs = qs, show_qplot = T)
+"
+"1","[1]"
+"1"," ""Starting clustering with BayesSpace"""
+"1","
+"
+"2","Number of cluster is not provided, qTune will used for selecting best q value
+"
+"2","Neighbors were identified for 1921 out of 1946 spots.
+"
+"2","Fitting model...
+"
+"2","Fitting model...
+"

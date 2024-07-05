@@ -1,0 +1,459 @@
+# Sun Nov  6 14:49:42 2022 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project: calculating spot features
+library(Seurat)
+library(dplyr)
+library(stringr)
+library(foreach)
+library(doParallel)
+library(GSVA)
+library(data.table)
+library(ggplot2)
+library(cowplot)
+library(igraph)
+library(ComplexHeatmap)
+library(AUCell)
+library(msigdbr)
+#library(MSigDB)
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/unit.R")
+special_genes <- read.table("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/ImmFeature/Immunomodulators.csv",
+                            sep = ",",
+                            header = T)
+# 
+setClass("STFeature", 
+         slots = list(
+           Position = "data.frame",
+           CellEnrich = "data.frame",
+           CellColocal = "data.frame",
+           GsetSig = "list",
+           SpeGenes = "list",
+           LRscore = "data.frame",
+           CNV = "data.frame",
+           PhenoScore = "data.frame",
+           Annotation = "data.frame",
+           Others = "ANY"))
+setClass("RegFeatures", 
+         slots = list(cellCodis = "data.frame",
+                      ImmuneInf = "data.frame",
+                      LRModules = "data.frame"),
+         contains = "STFeature")
+# counts normalization using gene length
+
+# create ST features object
+CreateStfObj <- function(st,
+                         stf = NULL,
+                         assay = "SCT",
+                         slot = "data",
+                         cell.abun = NULL,
+                         norm = T,
+                         min.prop = 0.05,
+                         init.fea = c("Position", "CellColocal", "SpeGenes"),
+                         verbose = T){
+  if (is.null(stf)) {
+    stf <- new("STFeature") 
+  }
+  if ("Position" %in% init.fea) {
+    if (! all(c("x", "y") %in% colnames(st@meta.data))) {
+      stop("x,y information are missing in meta.data, please run STcoordCheck !")
+    }
+    stf@Position <- st@meta.data[, c("x", "y")]
+  }
+  
+  if (! is.null(cell.abun)) {
+    if (length(setdiff(rownames(cell.abun), colnames(st)))) {
+      if (verbose) {
+        warning("Some spots/cells in cell.abun not present in st data.")
+      }
+      cell.abun <- cell.abun[intersect(rownames(cell.abun), colnames(st)), , drop = F]
+    }
+    new.data <- data.frame(row.names = colnames(st))
+    new.data[rownames(x = cell.abun), colnames(cell.abun)] <- cell.abun[, , drop = F]
+    norm.data <- new.data/rowSums(new.data)
+    norm.data[norm.data <= min.prop] <- 0
+    # re-norm
+    norm.data <- norm.data/rowSums(norm.data)
+    if (norm) {
+      stf@CellEnrich <- data.frame(norm.data, check.names = F)
+    } else {
+      stf@CellEnrich <- data.frame(new.data, check.names = F)
+    }
+  }
+  if ("CellColocal" %in% init.fea) {
+    data <- Norm01(stf@CellEnrich)
+    cellColocal <- combn(x = colnames(stf@CellEnrich), 
+                         m = 2, 
+                         FUN = function(x){
+                           data[, x[1]] * data[, x[2]]
+                           # ifelse((data[, x[1]]>min.norm.prop)*(data[, x[2]]>min.norm.prop) == 0, 0, 1)
+                         })
+    colnames(cellColocal) <- combn(x = colnames(data), 
+                                   m = 2, 
+                                   FUN = function(x){
+                                     paste(sort(c(x[1], x[2])), collapse = "_")
+                                   })
+    rownames(cellColocal) <- rownames(data)
+    stf@CellColocal <- data.frame(cellColocal, check.names = F)
+  }
+  if ("SpeGenes" %in% init.fea) {
+    gene_expr <- GetAssayData(object = st,
+                              assay = assay,
+                              slot = slot)
+    common_genes <- intersect(rownames(st), special_genes$Genes)
+    gene_expr <- gene_expr[common_genes,]
+    gene_expr <- as.matrix(gene_expr)
+    stf@SpeGenes <- split(data.frame(gene_expr), 
+                          f = special_genes[match(common_genes, special_genes$Genes), "Function"])
+                        
+  }
+  return(stf)
+}
+
+## feature characterization
+
+CalRegFeatures <- function(regions, 
+                           spot.stf,
+                           reg.stf = NULL,
+                           features = "All", 
+                           immune.cells = NULL, 
+                           tumor.cells = NULL, 
+                           TLSunit = F, 
+                           platform = "visium",
+                           verbose = T){
+  if (is.null(spot.stf)) {
+    stop("spot.stf need to be provided")
+  }
+  # check regions
+  if (setdiff(regions, rownames(spot.stf@Position))) {
+    stop("Some spots of region are not exist in spot.stf !")
+  }
+  if (is.null(reg.stf)) {
+    reg.stf <- new("RegFeatures")
+  }
+  if (is.null(immune.cells)) {
+    #immune.cells = c("B.cells", "T.cells",  "Dendritic.cells", "NK", "Plasma.cells", "Macrophage", "Monocyte")
+  }
+  if (is.null(tumor.cells)) {
+    #tumor.cells = c("Tumor.cells")
+  }
+  rname <- names(regions)
+  du.order <- duplicated(rname)
+  for(i in 1:length(rname)){
+    rname[i] <- ifelse(du.order[i], paste0(rname[i], ".", i), rname[i])
+  }
+  Meanfea <- function(slot){
+    print(paste0("starting calculation for ", slot))
+    fea <- data.frame(slot(spot.fea, slot))
+    if(TLSunit){
+      data <- UnitEnrich(fea, regions, r.dist, method = "wei.dis")
+      }
+    else{
+      data <- UnitEnrich(fea, regions, r.dist, method = "mean")
+    }
+    rownames(data) <- rname
+    return(data)
+  }
+  if("cellEnrich" %in% features){
+    stf@cellEnrich <- Meanfea("cellEnrich")
+  }
+  if("CanState" %in% features){
+    stf@CanState <- Meanfea("CanState")
+  }
+  if("ImmState" %in% features){
+    stf@ImmState <- Meanfea("ImmState")
+  }
+  if("TLSpred" %in% features){
+    stf@TLSpred <- Meanfea("TLSpred")
+    #colnames(stf@TLScore) <- "TLSig"
+  }
+  if("GeneSet" %in% features){
+    stf@GeneSet <- Meanfea("GeneSet")
+  }
+  if("LRscore" %in% features){
+    print("starting calculation for LRscore")
+    # data slot should be normalized
+    Expr <- GetAssayData(st, assay = assay, slot = "data") %>% as.matrix()
+    LR_expression <- LRExpr(data.frame(Expr, check.names = F), LR_input)
+    stf@LRscore <- calLRScore(regions = regions, filter = F,
+                              interaction_input = interaction_input,
+                              LR_expression = LR_expression)
+    #Sys.time()
+  }
+  if("cellCodis" %in% features){
+    if(TLSunit){
+      stf@cellCodis <- Meanfea("cellColocal")
+    }
+    else{
+      print("starting calculation for cellCodis")
+      colocal <- spot.fea@cellColocal
+      stf@cellCodis <- foreach(i = names(regions), .combine = "rbind", .final = data.frame) %do% {
+        co.prop <- apply(colocal[regions[[i]],], 2, function(x){
+          round(length(which(x==1))/length(x),2)
+        })
+      }
+      rownames(stf@cellCodis) <- names(regions)
+      # decon <- apply(spot.fea@cellEnrich, 2, Norm01)
+      # pairs <- combn(sort(colnames(decon)), 2)
+      # stf@cellCodis <- foreach(i = names(regions), .combine = "rbind", .final = data.frame) %do% {
+      #   data <- decon[regions[[i]], ]
+      #   codis <- foreach(i = 1:ncol(pairs), .combine = "c") %do% {
+      #     data[, pairs[1, i]] %*% data[, pairs[2, i]]
+      #   }
+      # }
+      # colnames(stf@cellCodis) <- paste(pairs[1,], pairs[2,], sep = "_")
+     }
+  }
+  if("ImmuneInf" %in% features){
+    print("starting calculation for ImmuneInf")
+    decon <- apply(spot.fea@cellEnrich, 2, Norm01)
+    imm.pair <- combn(sort(immune.cells), 2)
+    imm.pair <- paste(imm.pair[1,], imm.pair[2,], sep = "_")
+    stf@ImmuneInf <- foreach(i = names(regions), .combine = "rbind", .final = data.frame) %do% {
+      imm.enrich <- rowSums(spot.fea@cellEnrich[regions[[i]], immune.cells]) %>% mean()
+      # X <- colMeans(data[, immune.cells])
+      # X = X[X > 0.05] # immune cell types with prop more than 0.05 were used for calculation
+      # X = X/sum(X)
+      # shanno = ifelse(length(X)>=1, foreach(p = X, .combine = "c", .final = sum) %do% {
+      #  -p*log(p)}, 0)
+      # immune diversity were difinited using numeber of co-dis immune cells in this region
+      imm.diver <- sum(stf@cellCodis[i, imm.pair] >=0.4)/length(imm.pair)
+      imm.diver <- round(imm.diver, 2)
+      #imm.diver <- sum(colSums(decon[regions[[i]], immune.cells] > 0.5)>0.5)
+      res <- c(imm.enrich, imm.diver)
+      return(res)
+    }
+    rownames(stf@ImmuneInf) <- names(rname)
+    colnames(stf@ImmuneInf) <- c("imm.enrich", "imm.diver")
+  }
+  #
+  return(stf)
+}
+
+# coDiscore.region <- function(decon.mtrx, region.use, select.cells = NULL, sig.test = T,freq = 1000){
+#   # Decon.mtrx: matrix of cell proporation with spot position as rownames
+#   # order of cluster is consistent with spots in Decon.mtrx
+#   # list of regions
+#   if(is.null(select.cells)){
+#     select.cells <- colnames(decon.mtrx)
+#   }
+#   if(length(select.cells) < 2){
+#     stop("Error: need at least two cell types")
+#   }
+#   res <- list()
+#   pairs <- combn(sort(select.cells), m = 2)
+#   
+#   for(reg in names(region.use)){
+#     data <- decon.mtrx[region.use[[reg]], select.cells]
+#     n.spots <- nrow(data)
+#     res[[reg]] <- foreach(i = 1:ncol(pairs), .combine = "rbind") %do% {
+#       cellA <- pairs[1, i]
+#       cellB <- pairs[2, i]                                                                                                                          
+#       x <- data[, cellA]
+#       y <- data[, cellB]
+#       coAB <- which(x * y != 0)
+#       colocal <- length(coAB)/n.spots
+#       if(n.spots == 1){
+#         codis <- 0
+#       }
+#       else{
+#         codis <- exp(-sd(log2((x + 0.01)/(y + 0.01)))/2)
+#       }
+#       #shanno <- x%*%y
+#       score <- colocal*codis
+#       if(sig.test){
+#         n <- 0
+#         freqX <- 0
+#         test <- repeat{
+#           n <- n + 1
+#           r1 <- sample(decon.mtrx[, cellA], n.spots, replace = F)
+#           r2 <- sample(decon.mtrx[, cellB], n.spots, replace = F)
+#           coab <- which(r1 * r2 != 0)
+#           rN0 <- length(coab)/n.spots
+#           r.score <- rN0*exp(-sd(log2((r1 + 0.01)/(r2 + 0.01)))/2)
+#           if(r.score > score){
+#             freqX = freqX + 1
+#           }
+#           if(n == freq){
+#             break
+#           }
+#         }
+#         pvalue <- freqX/freq
+#       }
+#       else{pvalue <- NA}
+#       c(colocal, codis, score, pvalue)
+#     }
+#     rownames(res[[reg]]) <- paste(pairs[1,], pairs[2,], sep = "-")
+#     colnames(res[[reg]]) <- c("colocal", "codis", "score", "pvalue")
+#   }
+#   return(res)
+# } 
+
+# scoring geneset expression by GSVA, AddModuleScore and AUCell
+# load geneset list
+CuratedSig.lt <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/Geneset.lt.rds")
+msigdb_types <- function(){
+  msigdb_type <- c(HALLMARK = "H",
+                   KEGG = "C2",
+                   REATOME = "C2",
+                   MOTIF = "C3",
+                   BIOCARTA = "C2",
+                   "GO:BP" = "C5",
+                   "GO:CC" = "C5",
+                   "GO:MF" = "C5",
+                   HPO = "C5",
+                   "TFT:GTRD" = "C3",
+                   "TFT:TFT_Legacy" = "C3")
+  return(msigdb_type)
+}
+GetGsetSigScore <- function(expr,
+                            stf = NULL,
+                            category = "CuratedSig",
+                            types = c("Immune", "Cancer"),
+                            subtype = NULL,
+                            species = "Homo sapiens",
+                            method = "AddModuleScore",
+                            scale = F,
+                            verbose = T){
+  if (! category %in% c("CuratedSig", "MSigDB")) {
+    stop("Category must be CuratedSig or MSigDB!")
+  }
+  if (!is.null(stf)) {
+    gset_score <- stf@GsetSig[[category]]
+  } else {
+    gset_score <- list()
+  }
+  if (category == "CuratedSig") {
+    if (! all(types %in% c("Immune", "Cancer"))) {
+      stop("types for CuratedSig are only Immune and Cancer")
+    }
+    for (fea in types){
+      if (verbose) {
+        message(paste0("Calculating ",fea , "-related signatures"))
+      }
+      subtypes <- subtype %||% names(CuratedSig.lt[[fea]])
+      temp <- setdiff(subtypes, names(CuratedSig.lt[[fea]]))
+      if (length(temp)) {
+        warning("subtypes ", paste(temp, collapse = ", "), "are not available for ", fea)
+        subtypes <- intersect(subtypes, names(CuratedSig.lt[[fea]]))
+      }
+      for (sub in subtypes){
+        gset <- CuratedSig.lt[[fea]][[sub]]
+        gset_score[[fea]][[sub]] <- GsetScore(expr = expr, 
+                                                  geneset = gset,
+                                                  method = method,
+                                                  scale = scale,
+                                                  verbose = verbose)
+      }
+    }
+  }
+  if (category == "MSigDB") {
+    msigdb_type <- msigdb_types()
+    if (! all(types %in% names(msigdb_type))) {
+      stop("Please provide correct subtypes for MSigDB! Check it using msigdb_types()")
+    }
+    for(type in types){
+      if (type %in% c("BIOCARTA", "KEGG", "REACTOME")) {
+        type <- paste0("CP:", type)
+      }
+      if (verbose) {
+        message(paste0("Calculating ",type , " geneset"))
+      }
+      if(type == "HALLMARK"){
+        db <- msigdbr(species = species, 
+                      category = msigdb_type[type])
+      } else{
+        db <- msigdbr(species = species, 
+                      category = msigdb_type[type], 
+                      subcategory = types)
+      }
+      db <- split(x = db$gene_symbol, 
+                  f = db$gs_name)
+      gset_score[[type]]  <- GsetScore(expr = expr, 
+                                       geneset = db,
+                                       method = method,
+                                       scale = scale,
+                                       verbose = verbose)
+      
+    }
+  }
+  if (! is.null(stf)) {
+    stf@GsetSig[[category]] <- gset_score
+    return(stf)
+  } else {
+    return(gset_score)
+  }
+}
+GsetScore <- function(expr, 
+                      geneset,
+                      method = "AddModuleScore", 
+                      gsva.method = "ssgsea",
+                      scale = F,
+                      verbose = T){
+  # method can be ssGSEA, AUCell or AddModuleScore 
+  
+  if (method == "AddModuleScore") {
+    empty.sets <- lapply(geneset, function(x){
+      length(intersect(x, rownames(expr))) > 0
+    })
+    geneset2 <- geneset[unlist(empty.sets)]
+    temp <- CreateSeuratObject(counts = expr)
+    n1 <- ncol(temp@meta.data)
+    temp <- suppressWarnings(AddModuleScore(temp,
+                           features = geneset2, 
+                           name = names(geneset2),
+                           verbose = verbose))
+    n2 <- ncol(temp@meta.data)
+    score <- temp@meta.data[, (n1+1) : n2, drop = F]
+    colnames(score) <- names(geneset2)
+    res <- matrix(data = NA, 
+                  ncol = length(geneset), 
+                  nrow = nrow(score))
+    rownames(res) <- rownames(score)
+    colnames(res) <- names(geneset)
+    res <- data.frame(res, check.names = F)
+    res[, colnames(score)] <- score
+    score <- res
+  }
+  if (method == "AUCell" ) {
+    library(AUCell)
+    cells_rankings <- AUCell_buildRankings(exprMat = expr, 
+                                           plotStats=FALSE,
+                                           verbose = verbose)
+    cells_AUC <- AUCell_calcAUC(geneSets = geneset, 
+                                rankings = cells_rankings,
+                                verbose = verbose)
+    score <- getAUC(cells_AUC)
+    score <- data.frame(t(score), check.names = F)
+  }
+  if (method == "gsva") {
+    library(GSVA)
+    score <- gsva(expr = expr, 
+                  gset.idx.list = geneset, 
+                  method = gsva.method,
+                  verbose = verbose)
+    score <- data.frame(t(score), check.names = F)
+  }
+  if (method == "UCell") {
+    temp <- CreateSeuratObject(counts = expr)
+    n1 <- ncol(temp@meta.data)
+    temp <- suppressWarnings(AddModuleScore_UCell(temp,
+                                 features = geneset,
+                                 name = NULL))
+    n2 <- ncol(temp@meta.data)
+    score <- temp@meta.data[, (n1+1) : n2, drop = F]
+  }
+  if (scale){
+    score <- apply(score, 2, scale)
+    score <- data.frame(score, check.names = F)
+  }
+  return(score)
+}
+
+Norm01 <- function(x, constant.v = 0){
+  if (length(unique(x)) ==1) {
+    x <- rep(constant.v, length(x))
+  } else {
+    (x-min(x))/(max(x)-min(x)) 
+  }
+}

@@ -1,0 +1,25 @@
+WARNING: ignoring environment value of R_HOME
+[1] "LIHC"
+
+ neg  pos 
+1587  126 
+[1] "2023-11-14 16:50:23 CST"
+Compute NMF rank= 2  ... + measures ... OK
+Compute NMF rank= 3  ... + measures ... OK
+Compute NMF rank= 4  ... + measures ... OK
+Compute NMF rank= 5  ... + measures ... OK
+Compute NMF rank= 6  ... + measures ... OK
+Compute NMF rank= 7  ... + measures ... OK
+Compute NMF rank= 8  ... + measures ... OK
+Compute NMF rank= 9  ... + measures ... OK
+Compute NMF rank= 10  ... + measures ... OK
+[1] "2023-11-14 17:52:32 CST"
+Compute NMF rank= 2  ... + measures ... OK
+Compute NMF rank= 3  ... + measures ... OK
+Compute NMF rank= 4  ... + measures ... OK
+Compute NMF rank= 5  ... + measures ... OK
+Compute NMF rank= 6  ... + measures ... OK
+Compute NMF rank= 7  ... + measures ... OK
+Compute NMF rank= 8  ... + measures ... OK
+Compute NMF rank= 9  ... + measures ... OK
+Compute NMF rank= 10  ... + measures ... OK

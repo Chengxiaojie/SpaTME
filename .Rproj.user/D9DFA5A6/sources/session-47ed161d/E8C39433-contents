@@ -1,0 +1,587 @@
+# Tue May  2 22:15:25 2023 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project: phenotype asscociated program and expression score in ST using NMF
+#library(data.table)
+#library(Seurat)
+library(survival)
+library(pbapply)
+library(foreach)
+library(NMF)
+library(clusterProfiler)
+library(ReactomePA)
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+#options(datatable.fread.datatable=FALSE)
+GeneLen <- read.table("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/All_hg19gene_len.txt", row.names = 1, header = T)
+# protein-coding gene filter
+# genetype <- read.table("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/Homo_sapiens.GRCh38.109.gene.txt")
+# genetype <- genetype[ ,c(2,4,6)]
+# pseudogenes <- genetype[,2][grepl("pseudogene", genetype[,3])]
+#saveRDS(pseudogenes, "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/pseudogenes.rds")
+pseudogenes <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/pseudogenes.rds")
+#
+
+# ########################### Sat May  6 14:13:45 2023 ###########################
+# ## phenotype associated features/genes
+# ####################
+# Coxtest <- function(data, 
+#                     phenotype,
+#                     verbose = T){
+#   # phenotype, Should be a two-column matrix with columns named 'time' and 'status'. 
+#   # The latter is a binary variable, with '1' indicating event (e.g.recurrence of cancer or death), and '0' indicating right censored.
+#   if (verbose) {
+#     pb <- txtProgressBar(min = 0, 
+#                          max = nrow(data), 
+#                          style = 3)
+#   }
+#   cox.genes <- foreach(i = 1:nrow(data), .combine = rbind) %do% {
+#     x <- unlist(data[i, ])
+#     cox = suppressWarnings(coxph(Surv(phenotype$time, phenotype$status) ~ x))
+#     coef = summary(cox)$coefficients[c(1,5)]
+#     c.index = cox$concordance["concordance"]
+#     #
+#     cox.test = cox.zph(cox)
+#     cox.test.p = cox.test$table["GLOBAL","p"]
+#     if (verbose) {
+#       setTxtProgressBar(pb = pb, value = i)
+#     }
+#     return(c(coef, c.index, cox.test.p))
+#   }
+#   if (verbose) {
+#     close(con = pb)
+#   }
+#   rownames(cox.genes) <- rownames(data)
+#   colnames(cox.genes) <- c("coef", "coef.p", "c.index", "cox.test.p")
+#   cox.genes <- data.frame(cox.genes)
+#   return(cox.genes)
+# }
+# ####################
+# Glmtest <- function(data, phenotype, family){
+#   # phenotype:
+#   # Continuous dependent variable. Should be a quantitative vector for family = gaussian.
+#   # Binary group indicator vector. Should be either a 0-1 encoded vector or a factor with two levels for family = binomial.
+#   y <- phenotype
+#   asso.fea <- foreach(i = rownames(data), .combine = "rbind") %do% {
+#     x <- unlist(data[i, ])
+#     model <- glm(formula = y ~ x, family = family)
+#     coef <- summary(model)
+#     coef <- coef$coefficients["x", ]
+#   }
+#   rownames(asso.fea) <- rownames(data)
+#   colnames(asso.fea) <- c("coef",  "Std.Error", "z.value",  "p.value")
+#   asso.fea <- data.frame(asso.fea)
+#   return(asso.fea)
+# }
+# ####################
+# WilcoxTest <- function(
+#     data,
+#     phenotype,
+#     verbose = TRUE,
+#     ...
+# ) {
+#     p_val <- pbsapply(
+#       X = 1:nrow(x = data),
+#       FUN = function(x) {
+#         y <- unlist(data[x, ])
+#         return(wilcox.test(y ~ phenotype, ...)$p.value)
+#       }
+#     )
+#   return(data.frame(p_val, row.names = rownames(x = data)))
+# }
+# 
+# ####################
+# ExpMean <- function(x, ...) {
+#   if (inherits(x = x, what = 'AnyMatrix')) {
+#     return(apply(X = x, FUN = function(i) {log(x = mean(x = exp(x = i) - 1) + 1)}, MARGIN = 1))
+#   } else {
+#     return(log(x = mean(x = exp(x = x) - 1) + 1))
+#   }
+# }
+# AUCMarkerTest <- function(data1, data2, mygenes, print.bar = TRUE) {
+#   myAUC <- unlist(x = lapply(
+#     X = mygenes,
+#     FUN = function(x) {
+#       return(DifferentialAUC(
+#         x = as.numeric(x = data1[x, ]),
+#         y = as.numeric(x = data2[x, ])
+#       ))
+#     }
+#   ))
+#   myAUC[is.na(x = myAUC)] <- 0
+#   iterate.fxn <- ifelse(test = print.bar, yes = pblapply, no = lapply)
+#   avg_diff <- unlist(x = iterate.fxn(
+#     X = mygenes,
+#     FUN = function(x) {
+#       return(
+#         ExpMean(
+#           x = as.numeric(x = data1[x, ])
+#         ) - ExpMean(
+#           x = as.numeric(x = data2[x, ])
+#         )
+#       )
+#     }
+#   ))
+#   toRet <- data.frame(cbind(myAUC, avg_diff), row.names = mygenes)
+#   toRet <- toRet[rev(x = order(toRet$myAUC)), ]
+#   return(toRet)
+# }
+# DifferentialAUC <- function(x, y) {
+#   prediction.use <- prediction(
+#     predictions = c(x, y),
+#     labels = c(rep(x = 1, length(x = x)), rep(x = 0, length(x = y))),
+#     label.ordering = 0:1
+#   )
+#   perf.use <- performance(prediction.obj = prediction.use, measure = "auc")
+#   auc.use <- round(x = perf.use@y.values[[1]], digits = 3)
+#   return(auc.use)
+# }
+# MarkerTest <- function(data, phenotype, auc.power = 0.7, verbose = TRUE
+# ) {
+#   group <- unique(phenotype)
+#   to.return <- AUCMarkerTest(
+#     data1 = data[, phenotype == group[1], drop = FALSE],
+#     data2 = data[, phenotype == group[2], drop = FALSE],
+#     mygenes = rownames(x = data),
+#     print.bar = verbose
+#   )
+#   to.return$power <- abs(x = to.return$myAUC - 0.5) * 2
+#   to.return <- to.return[abs(to.return$power) >= 0.7, ]
+#   return(to.return)
+# }
+# ####################
+# DESeq2DETest <- function(
+#     data,
+#     phenotype,
+#     contrast,
+#     verbose = TRUE,
+#     ...
+# ) {
+#   # if (!PackageCheck('DESeq2', error = FALSE)) {
+#   #   stop("Please install DESeq2 - learn more at https://bioconductor.org/packages/release/bioc/html/DESeq2.html")
+#   # }
+#   #CheckDots(..., fxns = 'DESeq2::results')
+#   # group.info <- data.frame(row.names = c(cells.1, cells.2))
+#   # group.info[cells.1, "group"] <- "Group1"
+#   # group.info[cells.2, "group"] <- "Group2"
+#   group.info[, "group"] <- factor(x = group.info[, "group"])
+#   group.info <- data.frame(group = phenotype)
+#   group.info$wellKey <- rownames(x = group.info)
+#   dds1 <- DESeq2::DESeqDataSetFromMatrix(
+#     countData = data,
+#     colData = group.info,
+#     design = ~ group
+#   )
+#   dds1 <- DESeq2::estimateSizeFactors(object = dds1)
+#   dds1 <- DESeq2::estimateDispersions(object = dds1, fitType = "local")
+#   dds1 <- DESeq2::nbinomWaldTest(object = dds1)
+#   res <- DESeq2::results(
+#     object = dds1,
+#     contrast = contrast,
+#     alpha = 0.05,
+#     ...
+#   )
+#   to.return <- data.frame(p_val = res$pvalue, row.names = rownames(res))
+#   return(to.return)
+# }
+# 
+# ####################
+# PhenoAssoFeatures <- function(data, 
+#                               phenotype, 
+#                               method, 
+#                               family = NULL,
+#                               deseq2_contrast = NULL,
+#                               adj.method = "BH", 
+#                               p.adj = T,
+#                               p.cut = 0.01,
+#                               p.adj.cut = 0.05, 
+#                               auc.power = 0.7,
+#                               cox.test.cut = 0.05,
+#                               verbose = T){
+#   if(is.null(dim(phenotype))){
+#     sams <- intersect(colnames(data), names(phenotype))
+#     phenotype <- phenotype[sams]
+#   }
+#   else{
+#     sams <- intersect(colnames(data), rownames(phenotype))
+#     phenotype <- phenotype[sams,]
+#   }
+#   data <- data[, sams]
+#   asso_res <- switch (method,
+#     "cox" = Coxtest(data = data,
+#                     phenotype = phenotype,
+#                     verbose = verbose),
+#     "glm" = Glmtest(data = data,
+#                     phenotype = phenotype,
+#                     family = family),
+#     "auc" = MarkerTest(data = data,
+#                        phenotype = phenotype,
+#                        auc.power = auc.power),
+#     "wilcox" = WilcoxTest(data = data,
+#                           phenotype = phenotype),
+#     "deseq2" = DESeq2DETest(data = data,
+#                             phenotype = phenotype,
+#                             contrast = deseq2_contrast)
+#   )
+#   # filter with p value
+#   if(method == "cox"){
+#     if (p.adj) {
+#       asso_res[, "p.adj"] <- p.adjust(asso_res[, "coef.p"], 
+#                                       method = adj.method)
+#       asso_res <- subset(asso_res, 
+#                          subset = p.adj <= p.adj.cut & cox.test.p > cox.test.cut)
+#     } else {
+#       asso_res <- subset(asso_res, 
+#                          subset = coef.p <= p.cut & cox.test.p > cox.test.cut)
+#     }
+#     
+#   }
+#   else{
+#     if (p.adj) {
+#       asso_res[, "p.adj"] <- p.adjust(asso_res[, "p.value"], 
+#                                       method = adj.method) 
+#       asso_res <- subset(asso_res, subset = p.adj <= p.adj.cut)
+#     } else {
+#       asso_res <- subset(asso_res, subset = p.value <= p.cut)
+#     }
+#   }
+#   return(asso_res)
+# }
+####################
+# running NMF and prediction
+####################
+NMFpredict <- function(W, new_data)
+{
+  trainig_gene_set = unique(rownames(W))
+  new_data = new_data[match(trainig_gene_set, rownames(new_data)),]
+  rownames(new_data) = trainig_gene_set
+  new_data[is.na(new_data)] = 0
+  to_predict = as.matrix(new_data)
+  # check samples with non-expressed genes
+  final.sam <- colnames(to_predict)
+  out <- colnames(to_predict)[colSums(to_predict)==0]
+  to_predict <- to_predict[, setdiff(colnames(to_predict), out)]
+  my_method <- function (i, v, x, copy = FALSE, eps = .Machine$double.eps, ...)
+  {
+    w <- .basis(x)
+    h <- .coef(x)
+    nb <- nbterms(x)
+    nc <- ncterms(x)
+    h <- NMF:::std.divergence.update.h(v, w, h, nbterms = nb, ncterms = nc, copy = copy)
+    #w <- NMF:::std.divergence.update.w(v, w, h, nbterms = nb, ncterms = nc, copy = copy)
+    if (i%%10 == 0) {
+      h <- pmax.inplace(h, eps, icterms(x))
+      #w <- pmax.inplace(w, eps, ibterms(x))
+    }
+    if (copy) {
+      #.basis(x) <- w
+      .coef(x) <- h
+    }
+    return(x)
+  }
+  
+  ws = W
+  ws <- ws[apply(to_predict, 1, function(x) var(x) > 0),]
+  to_predict = to_predict[apply(to_predict, 1, function(x) var(x) > 0),]
+  ws = as.matrix(ws)
+  
+  dummy = rnmf(ncol(W), to_predict)
+  
+  my.seeding.method <- function(model, target){
+    basis(model) <- ws #estim.r@fit@W
+    # initialize H randomly
+    coef(model) <- dummy@H 
+    # return updated object
+    return(model)
+  }
+  
+  nmf_method <- NMFStrategy('my-method', 'brunet', Update = my_method, objective = 'KL', Stop='connectivity')
+  
+  new_nmf = nmf(to_predict, ncol(W), nrun = 1, method = nmf_method, seed = my.seeding.method, .opt='P1')
+  if (length(out) >0) {
+    H <- new_nmf@fit@H
+    H = as.data.frame(H)
+    H[, out] <- 0
+    H <- as.matrix(H[, final.sam])
+    new_nmf@fit@H <- H
+  }
+  new_nmf
+}
+Counts2TPM <- function(counts,geneLen) {
+  common.genes <- intersect(rownames(counts),rownames(geneLen))
+  x <- counts[common.genes,]/geneLen[common.genes,]
+  return(t(t(x)*1e6/colSums(x)))
+}
+NMF_bulk_input <- function(data, genelen = NULL, 
+                           totpm = T, dolog = T, 
+                           pt_gene_exp = 0.1,
+                           base_gene_exp = 0, 
+                           pseudogene.filt = F){
+  data <- data[! is.na(rowSums(data)), ]
+  if(totpm){
+    print("starting convert counts to TPM")
+    data <- Counts2TPM(data, geneLen = genelen)
+  }
+  if(dolog){
+    data <- log2(data + 1)
+  }
+  g.pt <- rowSums(data > base_gene_exp)/ncol(data) > pt_gene_exp
+  data <- data[g.pt,]
+  if(pseudogene.filt){
+    data <- data[! rownames(data) %in% pseudogenes,]
+  }
+  return(data)
+}
+RunNMFtest <- function(expr, 
+                     used.genes, 
+                     rank = seq(2, 8),
+                     nrun = 30,
+                     return.all = F,
+                     seed = 123456,
+                     min_cophenetic = 0.95,
+                     name_prefix = "Factor",
+                     verbose = T,
+                     options = "v"){
+  # nmf
+  expr <- expr[intersect(used.genes, rownames(expr)), ]
+  # check gene or samples with all 0
+  which.r <- which(apply(expr, 1, sd) == 0)
+  if (length(which.r) != 0) {
+    expr <- expr[-c(which.r),]
+    warning(paste0("Features: ", paste0(rownames(expr)[which.r], collapse = "/"), " with no variance are removed!"))
+  }
+  expr <- t(scale(t(expr)))
+  expr[expr < 0] <- 0
+  which.c <- which(apply(expr, 2, sd) == 0)
+  if (length(which.c) != 0) {
+    expr <- expr[, -c(which.c)]
+    warning(paste0("Samples: ", paste0(colnames(expr)[which.c], collapse = "/"), " with no variance are removed!"))
+  }
+  if (verbose) {
+    message("starting nmf analysis ···")
+    print(Sys.time())
+  }
+  nmf <- nmf(x = expr, 
+             rank = rank, 
+             nrun = nrun, 
+             seed = seed,
+             .options = options)
+  if (length(rank) > 1) {
+    for (i in 1:length(nmf$fit)) {
+      name <- paste0(name_prefix, "_", 1:ncol(nmf$fit[[i]]@fit@W))
+      colnames(nmf$fit[[i]]@fit@W) <- name
+      rownames(nmf$fit[[i]]@fit@H) <- name
+    }
+  } else {
+    name <- paste0(name_prefix, "_", 1:ncol(nmf@fit@W))
+    colnames(nmf@fit@W) <- name
+    rownames(nmf@fit@H) <- name
+  }
+  if ( length(rank) > 1) {
+    if (verbose) {
+      message("Best rank will be seleted from ", rank)
+    }
+    # rank selection
+    cophs <- data.frame(n_clusters = names(nmf$consensus),
+                        Cophenetic = nmf$measures$cophenetic)
+    best_rank <- biggest_drop(x = cophs,
+                              min_cophenetic = min_cophenetic)
+    if (verbose) {
+      message("Selected rank is :", best_rank)
+    }
+    if (return.all) {
+      res <- list(nmf = nmf, 
+                  cophs = cophs,
+                  best_rank = best_rank)
+    } else {
+      res <- nmf$fit[[best_rank]]
+    }
+  } else {
+    res <- nmf
+  }
+  return(res)
+}
+
+biggest_drop <- function(x, min_cophenetic = 0.95)
+{
+  cross = c(sapply(1:(nrow(x) - 1) , function(i) round(x[i,"Cophenetic"], 2) - round(x[i + 1, "Cophenetic"], 2)), NA)	
+  names(cross) = x$n_clusters
+  cross = cross[x[, "Cophenetic"] >= min_cophenetic]
+  cross <- na.omit(cross)
+  if(length(cross) ==0){
+    best.clu <- NA
+    print("There is no best cluster number can be seleted with the given cutoff of min_cophenetic !")
+  }
+  else{
+    max.drop = max(cross)
+    best.clu <- max(names(cross[cross == max.drop]))
+  }
+  return(best.clu)
+}
+
+#
+HPhenoAsso <- function(nmfobj, phenotype, method, ...){
+  train_H <- nmfobj@fit@H
+  asso_res <- PhenoAssoFeatures(data = train_H, 
+                                phenotype = phenotype, 
+                                method = method, 
+                                ...)
+  if(method == "cox"){
+    p.sig <- asso_res[, "coef.p"]
+    test.sig <- asso_res[, "cox.test.p"]
+    W_type <- ifelse(p.sig <= 0.05 & test.sig >= 0.1, 
+                     ifelse(p.sig >= 0.01, "*", 
+                            ifelse(p.sig >= 0.001, "**", "***")), "Nonsig")
+    W_type <- paste0(ifelse(asso_res[, "coef"] <0, "Pos", "Neg"), "_", W_type)
+  } 
+  if (method == "auc") {
+    W_type <- paste0("AUC_", asso_res[, "myAUC"])}
+  if(method == "cor"){
+    W_type <- paste0("corr", round(asso_res[, "corr"], 2))
+  }
+  if (method == "glm"){
+      p.sig <- asso_res[, "p.value"]
+      W_type <- ifelse(p.sig <= 0.05, 
+                       ifelse(p.sig >= 0.01, "*", 
+                              ifelse(p.sig >= 0.001, "**", "***")), "Nonsig")
+      W_type <- paste0(ifelse(asso_res[, "coef"] >0, "Pos", "Neg"), W_type)
+  }
+  if (method == "wilcox") {
+    p.sig <- asso_res[, "p.value"]
+    W_type <- ifelse(p.sig <= 0.05, 
+                     ifelse(p.sig >= 0.01, "*", 
+                            ifelse(p.sig >= 0.001, "**", "***")), "Nonsig")
+    W_type <- paste0(ifelse(asso_res[, "avg.diff"] >0, "Pos", "Neg"), W_type)
+  }
+  names(W_type) <- rownames(asso_res)
+  return(W_type)
+}
+#
+
+PredNMFinST <- function(st, 
+                        W,
+                        assay = "SCT",
+                        slot = "data",
+                        plotfile = NULL,
+                        verbose = T,
+                        ...){
+  if (verbose) {
+    message("Predict expression of factors in spatial data ···")
+  }
+  newdata <- GetAssayData(object = st,
+                          assay = assay,
+                          slot = slot)
+  newdata <- as.matrix(newdata)
+  newdata <- newdata[rowSums(newdata) >0,]
+  newdata <- t(scale(t(newdata)))
+  newdata[newdata < 0] = 0
+  #
+  nmf_pred <- NMFpredict(W, newdata)
+  if (! is.null(colnames(W))) {
+    name <- colnames(W)
+  } else {
+    name <- paste0("Factor_", 1:ncol(W))
+  }
+  colnames(nmf_pred@fit@W) <- name
+  rownames(nmf_pred@fit@H) <- name
+  # plot
+  if (! is.null(plotfile)) {
+    H = nmf_pred@fit@H
+    pdf(plotfile)
+    par(mfrow=c(nrow(H),1))
+    for(i in rownames(H)){
+      p <- SpotVisualize(st, 
+                         meta = scale(H[i,])[, 1], 
+                         return = T, 
+                         title = i, 
+                         ...)
+      print(p)
+    }
+    dev.off()
+  }
+  return(nmf_pred)
+}
+
+# abstract top meta-genes
+FactorMetagenes <- function(ref_W, 
+                            method = "top", 
+                            top_num = 200, 
+                            sd_n = 1.96,
+                            plot = T, 
+                            plotfile = NULL){
+  # sd_n :1.96sd: 0.01 pvalue; 1.65sd:0.1 pvalue
+  if(is.null(colnames(ref_W))){
+    colnames(ref_W) <- paste0("Factor_", 1:ncol(ref_W))
+  }
+  if(method == "top"){
+    mg <- apply(ref_W, 2, function(x){
+      temp <- order(x, decreasing = T)[1: top_num]
+      return(c(rownames(ref_W)[temp]))
+    })
+    mg_vt <- reshape2::melt(mg)
+    mg_vt <- setNames(mg_vt$Var2, mg_vt$value)
+  }
+  if(method == "nsd"){
+    mg <- apply(ref_W, 2, function(x){
+      cut <- mean(x) + sd_n*sd(x)
+      return(rownames(ref_W)[x >= cut])
+    })
+    mg_vt <- foreach(x = names(mg), .combine = "c") %do% {
+      setNames(rep(x, length(mg[[x]])), mg[[x]])
+    }
+  }
+  p <- Heatmap(ref_W[names(mg_vt),], show_row_names = F, row_title = NULL, cluster_rows = F,
+          name = "Weight", split = mg_vt, cluster_columns = F, column_names_rot = 45, row_gap = unit(0, "mm"),
+          col = colorRamp2(c(min(ref_W), max(ref_W)), colors = c("#336699", "#c32f27")))
+  if(! is.null(plotfile)){
+    pdf(plotfile, width = 5, height = 5)
+    draw(p, padding = unit(c(4, 15, 4, 4), "mm"))
+    dev.off()
+  } else {
+    if(plot){
+      print(p)
+    } 
+  }
+  return(mg_vt)
+}
+FactorEnrichAnalysis <- function(mg_vt, 
+                                 fun = "enrichGO", 
+                                 plot = T, 
+                                 show_num = 5,
+                                 compared = T, 
+                                 simplify = T,
+                                 savefile = NULL,
+                                 wrap_width = 50,
+                                 p.width = 8, p.height = 10,
+                                 ...){
+  # mg_vt; group vector named by metagene
+  metagenes <- data.frame(factor = mg_vt,
+                          genes = names(mg_vt))
+  # enrichment analysis
+  # symbol convert to entreid
+  gid <- bitr(unique(metagenes$genes), 'SYMBOL', 'ENTREZID', OrgDb='org.Hs.eg.db',)
+  metagenes <- full_join(metagenes, gid, by=c('genes' = 'SYMBOL'))
+  metagenes <- metagenes[! is.na(metagenes$ENTREZID), ]
+  if(compared){
+    x = compareCluster(ENTREZID ~ factor, data = metagenes, fun = fun, ...)
+    if (simplify & fun == "enrichGO") {
+      x <- x %>% clusterProfiler::simplify()
+    }
+    if(plot){
+      p <- dotplot(x, showCategory = show_num) + 
+        theme(axis.text.x = element_text(angle=45, hjust=1), 
+                              axis.text = element_text(size = 18)) +
+        scale_y_discrete(labels=function(x) str_wrap(x, width= wrap_width))
+      print(p)
+    }
+    if(! is.null(savefile)){
+      pdf(savefile, width = p.width, height = p.height)
+      print(p)
+      dev.off()
+    }
+  }
+  else{
+    
+  }
+  return(x)
+}

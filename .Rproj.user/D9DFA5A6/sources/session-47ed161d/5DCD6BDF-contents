@@ -1,0 +1,285 @@
+# Sat Apr  9 10:37:32 2022 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project: spatial transcriptomics data processing
+# load library
+library(Seurat)
+library(dplyr)
+library(pROC)
+library(igraph)
+library(GSVA)
+library("survival")
+library("survminer")
+#
+setwd(dir = "/home/chengxj/ST_scRNAseq/GSE175540")
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+#
+dir.create("Temp_RDS")
+samples <- read.table("Data/samples.txt")[, 1]
+Spatial.list <- sapply(samples, USE.NAMES = T, function(sam){
+  raw_data_directory <- paste0("Data/GSE175540_RAW/", sam)
+  spatial_object <- Seurat::Load10X_Spatial(data.dir = raw_data_directory,
+                                            filename = paste0(sam, "_filtered_feature_bc_matrix.h5"),
+                                            slice = sam)
+})
+for(sam in names(Spatial.list)){
+  # remove mt genes
+  mt.genes <- grep(pattern = "^MT-", x = rownames(Spatial.list[[sam]]), value = TRUE)
+  genes_to_keep <- setdiff(names(which(Matrix::rowSums(Spatial.list[[sam]]@assays$Spatial@counts )>5)),mt.genes)
+  Spatial.list[[sam]][["percent.mt"]] = PercentageFeatureSet(Spatial.list[[sam]], pattern = "^MT-")
+  Spatial.list[[sam]] <- subset(Spatial.list[[sam]], 
+                               features = genes_to_keep,
+                               subset = nFeature_Spatial > 300 & percent.mt < 30)
+  #
+  Spatial.list[[sam]] <- SCTransform(Spatial.list[[sam]], assay = "Spatial", verbose = F) %>%
+    RunICA(assay = "SCT", verbose = FALSE) %>%
+    FindNeighbors(reduction = "ica") %>%
+    FindCluster(verbose = FALSE,resolution = 0.8) %>%
+    RunUMAP(reduction = "ica", dims = 1:30)
+}
+saveRDS(Spatial.list, "Temp_RDS/Spatial.list.RDS")
+# spots annotated as TLS 
+TLSfile <- list.files("Data/TLS_annotations_Visium_meylan2022/", pattern = "TLS", full.names = T)
+for(sam in samples){
+  name <- substr(sam, 12, nchar(sam))
+  if(name=="ffpe_c_39"){
+    name = "ffpe_c_38"
+  }
+  file <- TLSfile[grep(paste0(name, "_"), TLSfile)]
+  if(length(file) == 1){
+    if(! "TLSanno" %in% colnames(Spatial.list[[sam]]@meta.data)){
+      annot <- read.csv(file, row.names = 1)
+      Spatial.list[[sam]] <- AddMetaData(object = Spatial.list[[sam]],
+                                         metadata = annot[colnames(Spatial.list[[sam]]), 1],
+                                         col.name = "TLSanno")
+    }
+  }
+  else{print(paste0(name, ": no TLS annotation"))}
+}
+# GSM5924035_ffpe_c_20.AAGCGCAGGGCTTTGA-1 were set to nonTLS as there are only one spots and has no TLS features
+Spatial.list[["GSM5924035_ffpe_c_20"]]$TLSanno["AAGCGCAGGGCTTTGA-1"] = "NO_TLS"
+# 
+# TLS score
+# TLS imprint signatures
+TLS.imprint.sig <- read.csv("/home/chengxj/ST_scRNAseq/BreastEGA8031/TLS/TLS_sig/TLS_imprint_signatures.csv", header = F, row.names = 1) %>% 
+  unlist() %>% unname()
+AUC.list <- list()
+savedir <- "/home/chengxj/ST_scRNAseq/GSE175540/TLS/Figures/TLS_imprint_signature/"
+AUC.list[["TLS.imprint.sig"]] <- sapply(names(Spatial.list), function(sam){
+  auc = c()
+  Spatial.list[[sam]] <<- AddTLScore(Spatial.list[[sam]], 
+             TLS.sig = TLS.imprint.sig, 
+             meta.name = "TLS.imprint.sigScore")
+  auc[sam] <- CalTLSAUC(Spatial.list[[sam]], 
+                        meta.name = "TLS.imprint.sigScore")
+  TLScorePlot(Spatial.list[[sam]],
+              meta.name = "TLS.imprint.sigScore",
+              savefile = paste0(savedir, sam, ".pdf"),
+              auc = auc[sam])
+  return(auc)
+})
+# TLS 50-signatures
+TLS.50sig <- read.csv("/home/chengxj/ST_scRNAseq/BreastEGA8031/TLS/TLS_sig/TLS_50signatures.csv", header = T) %>%
+  unlist() %>% unname()
+savedir <- "/home/chengxj/ST_scRNAseq/GSE175540/TLS/Figures/TLS_50_signature/"
+AUC.list[["TLS.50.sig"]] <- sapply(names(Spatial.list), function(sam){
+  auc = c()
+  Spatial.list[[sam]] <<- AddTLScore(Spatial.list[[sam]], 
+                                     TLS.sig = TLS.50sig, 
+                                     meta.name = "TLS.50.sigScore")
+  auc[sam] <- CalTLSAUC(Spatial.list[[sam]], 
+                        meta.name = "TLS.50.sigScore")
+  TLScorePlot(Spatial.list[[sam]],
+              meta.name = "TLS.50.sigScore",
+              savefile = paste0(savedir, sam, ".pdf"),
+              auc = auc[sam])
+  return(auc)
+})
+# signatures combined with imprint.sig and 50.sig
+imprintAdd50.sig <- union(TLS.50sig, TLS.imprint.sig) 
+saveRDS(imprintAdd50.sig, "TLS/Temp_RDS/imprintAdd50.sig.rds")
+savedir <- "/home/chengxj/ST_scRNAseq/GSE175540/TLS/Figures/imprintAdd50.sig/"
+AUC.list[["imprintAdd50.sig"]] <- sapply(names(Spatial.list), function(sam){
+  auc = c()
+  Spatial.list[[sam]] <<- AddTLScore(Spatial.list[[sam]], 
+                                     TLS.sig = imprintAdd50.sig, 
+                                     meta.name = "imprintAdd50.sig")
+  auc[sam] <- CalTLSAUC(Spatial.list[[sam]], 
+                        meta.name = "imprintAdd50.sig")
+  TLScorePlot(Spatial.list[[sam]],
+              meta.name = "imprintAdd50.sig",
+              savefile = paste0(savedir, sam, ".pdf"),
+              auc = auc[sam])
+  return(auc)
+})
+saveRDS(Spatial.list, "/home/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+########################### Tue Apr 26 16:56:14 2022 ###########################
+new.sig <- readRDS("TLS/Temp_RDS/new.sig.rds")
+AUC.list[["new.sig"]] <- sapply(names(Spatial.list), function(sam){
+  auc = c()
+  Spatial.list[[sam]] <<- AddTLScore(Spatial.list[[sam]], 
+                                     TLS.sig = new.sig, 
+                                     meta.name = "new.sigScore")
+  auc[sam] <- CalTLSAUC(Spatial.list[[sam]], 
+                        meta.name = "new.sigScore")
+  return(auc)
+})
+# combine new.sig and imprint.sig
+newAddimprint <- unique(union(new.sig,TLS.imprint.sig))
+AUC.list[["newAddimprint"]] <- sapply(names(Spatial.list), function(sam){
+  auc = c()
+  Spatial.list[[sam]] <<- AddTLScore(Spatial.list[[sam]], 
+                                     TLS.sig = newAddimprint, 
+                                     meta.name = "newAddimprint")
+  auc[sam] <- CalTLSAUC(Spatial.list[[sam]], 
+                        meta.name = "newAddimprint")
+  return(auc)
+})
+########################### Fri Apr 29 17:09:25 2022 ###########################
+## calculate TLS signature score using ssGSEA
+AUC.list[["TLS.imprintAdd50.ssGSEA"]] <- sapply(names(Spatial.list), function(sam){
+  auc = c()
+  ssgsea <- gsva(expr = as.matrix(Spatial.list[[sam]]@assays$SCT@data), 
+                gset.idx.list = list(imprintAdd50.sig), 
+                method = "ssgsea", 
+                ssgsea.norm = TRUE)
+  Spatial.list[[sam]] <- AddMetaData(Spatial.list[[sam]], ssgsea[1, ],
+                    col.name = "TLS.imprintAdd50.ssGSEA")
+  auc[sam] <- CalTLSAUC(Spatial.list[[sam]], 
+                            meta.name = "TLS.imprintAdd50.ssGSEA")
+  print(auc)
+  return(auc)
+})
+AUC.list[["TLS.newSig.ssGSEA"]] <- sapply(names(Spatial.list), function(sam){
+  auc = c()
+  ssgsea <- gsva(expr = as.matrix(Spatial.list[[sam]]@assays$SCT@data), 
+                 gset.idx.list = list(new.sig), 
+                 method = "ssgsea", 
+                 ssgsea.norm = TRUE)
+  Spatial.list[[sam]] <<- AddMetaData(Spatial.list[[sam]], ssgsea[1, ],
+                                     col.name = "TLS.newSig.ssGSEA")
+  auc[sam] <- CalTLSAUC(Spatial.list[[sam]], 
+                        meta.name = "TLS.newSig.ssGSEA")
+  return(auc)
+})
+saveRDS(AUC.list, "/home/chengxj/ST_scRNAseq/GSE175540/TLS/Temp_RDS/AUC.list.rds")
+# comparing auc with different TLS signatures
+auc.data <- Reduce(rbind, AUC.list)
+row.names(auc.data) <- names(AUC.list)
+colnames(auc.data) <- sapply(colnames(auc.data), function(x){
+  n = strsplit(x, split = "_") %>% unlist() 
+  n = paste(n[5], n[6], n[7], sep = "_")
+})
+#saveRDS(auc.data, "/home/chengxj/ST_scRNAseq/GSE175540/TLS/Temp_RDS/auc.data.rds")
+auc.data <- melt(auc.data[c(6, 7), ]) %>% setNames(c("signatures", "samples", "AUC"))
+data <- subset(auc.data, subset = ! AUC %in% c("noAnno", "noTLS")) 
+data$AUC <- as.numeric(data$AUC)
+ggplot(data = data, 
+       aes(x = samples, y = AUC, colour = signatures, group = signatures)) +
+  geom_line() + 
+  theme_bw() + 
+  theme(panel.grid=element_blank())
+########################### Tue May  3 20:03:10 2022 ###########################
+## clinical analysis of new.sig ssGSEA score
+ccRCC.Data <- readRDS("Scissor/Temp_RDS/ccRCC.Data.rds")
+ccRCC.clin <- readRDS("Scissor/Temp_RDS/ccRCC.clin.rds")
+tcga.ssgsea <- gsva(expr = as.matrix(ccRCC.Data), 
+               gset.idx.list = list(new.sig = new.sig, TLS.50sig = TLS.50sig), 
+               method = "ssgsea", 
+               ssgsea.norm = TRUE)
+table(ccRCC.clin$Sample.ID == colnames(ccRCC.Data))
+table(ccRCC.clin$Sample.ID == colnames(tcga.ssgsea))
+group <- ifelse(tcga.ssgsea[1,]> mean(tcga.ssgsea[1,]), "new.sig.high", "new.sig.low")
+#res.cox <- coxph(Surv(OS.Months, OS.Status) ~ group, 
+#                 data = cbind(ccRCC.clin, group))
+fit <- survfit(Surv(OS.Months, OS.Status) ~ group + Sex, 
+               data = cbind(ccRCC.clin, group))
+ggsurvplot(fit, ggtheme = theme_minimal(), pval = T)
+# visualization of spatial cluster with TLS anno 
+# get spots in each TLS
+for(sam in names(Spatial.list)){
+  if("TLSanno" %in% colnames(Spatial.list[[sam]]@meta.data)){
+    if(any(Spatial.list[[sam]]$TLSanno %in% c("TLS", "T_agg"))){
+      # TLS.group <- AddTLSgroup(Spatial.list[[sam]], sam)
+      # Spatial.list[[sam]] <- AddMetaData(Spatial.list[[sam]],
+      #                                    metadata = TLS.group,
+      #                                    col.name = "TLS.group")
+      #Spatial.list[[sam]]$TLS.group[Spatial.list[[sam]]$TLS.group == "Non"] = NA
+      pdf(paste0("TLS/SpatialPlot_TLS/", sam, ".pdf"))
+      plot = SpatialPlot(Spatial.list[[sam]], group.by = "TLS.group", pt.size.factor = 1.3)
+      print(plot)
+      dev.off() 
+    }
+  }
+}
+saveRDS(Spatial.list, "/home/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+################################ Function Part ################################
+## function to compute TLS score and perform AUC validation
+AddTLScore <- function(st, TLS.sig, meta.name){
+  # ST, spatial darta list to calculate TLS score, now specifical to Spatial.list
+  # meta.name, names for TLS score
+    intersect_tls_sign <- intersect(TLS.sig,rownames(st)) 
+    st <- AddMetaData(st,apply(as.matrix(st[["SCT"]]@data[intersect_tls_sign,]),2,mean),
+                                        col.name = meta.name) 
+  return(st)
+}
+#ROC 
+CalTLSAUC <- function(st, meta.name){
+  if("TLSanno" %in% colnames(st@meta.data)){
+    if(any(st$TLSanno == "TLS")){
+      pROC <- roc(response = st$TLSanno == "TLS",
+                  predictor = st@meta.data[, meta.name],
+                  direction = "<")
+      auc <- pROC$auc %>% round(2)
+    }else{auc <- "noTLS"}
+  }else{auc <- "noAnno"}
+  return(auc)
+}
+# visualization of TLS score
+TLScorePlot <- function(st, meta.name, savefile = NULL, auc = "NA"){
+  plot = SpatialPlot(st, image.alpha = 0, features = meta.name) +
+  scale_fill_viridis_c(option = "C",
+                       limits = c(round(min(st@meta.data[, meta.name])), round(max(st@meta.data[, meta.name])))) + 
+  DarkTheme() +
+  theme(axis.text=element_blank(), 
+        axis.ticks=element_blank(), 
+        axis.title =element_blank()
+  ) +
+  ggtitle(label =paste0("AUC = ", auc))
+  if(! is.null(savefile)){
+    pdf(savefile)
+    print(plot)
+    dev.off()
+  }
+  else{
+    print(plot)
+  }
+}
+AddTLSgroup <- function(st, sam){
+  #sam: naems of spatial sample
+  coord <- st@images[[sam]]@coordinates[, c("row", "col")]
+  nei.mtrx <- coord[st$TLSanno %in% c("TLS", "T_agg"),] %>% 
+    dist() %>% as.matrix() %>% round(digits = 2)
+  # distance for neighbour spots set to 3
+  nei.mtrx[nei.mtrx <= 3] = 1
+  nei.mtrx[nei.mtrx != 1] = 0
+  # create graph
+  g <- graph.adjacency(nei.mtrx, mode="undirected")
+  # get components
+  group <- rep("Non", ncol(st))
+  names(group) <- colnames(st)
+  # add prefix using sample 
+  n = strsplit(sam, split = "_") %>% unlist() 
+  n = paste(n[2], n[3], n[4], sep = "_")
+  comp <- paste0(n, "-",st$TLSanno[names(components(g)$membership)] , ".", components(g)$membership)
+  group[names(components(g)$membership)] <- comp
+  return(group)
+}
+#
+TLSscore_PAGE <- function(st, signature){
+  sign_matrix <- data.frame(rep(1, length(signature)), row.names = signature)
+  
+  return(hallmarkEnrich)
+}

@@ -1,0 +1,153 @@
+# Tue Apr 25 22:12:11 2023 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project: combine spatial transcriptomics analysis with bulk RNA-seq data so that clinical data can be utilized.
+library(Seurat)
+library(psych)
+library(data.table)
+library(stringr)
+library(foreach)
+library(doParallel)
+library(ggplot2)
+library(survival)
+library(ComplexHeatmap)
+library(NMF)
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/pheno_program_NMF.R")
+#source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+# set workdir
+setdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/"
+setwd(setdir)
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+# load spatial data
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+# # load TCGA RNA expression data
+ccRCC.Data <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Scissor/Temp_RDS/ccRCC.Data.rds")
+ccRCC.clin <- readRDS("Scissor/Temp_RDS/ccRCC.clin.rds")
+# ########################### Tue May  2 11:09:08 2023 ###########################
+# ## surv analysis
+# # surv associated genes
+g.num <- rowSums(ccRCC.Data>1)/ncol(ccRCC.Data)>0.1
+#g.low <- rowSums(ccRCC.Data) > 100
+ccRCC.Data <- ccRCC.Data[g.num,]
+# # table(brca.clin$Sample.ID == colnames(data))
+phenotype <- ccRCC.clin[, c("OS.Months", "OS.Status")]
+colnames(phenotype) <- c("time", "status")
+rownames(phenotype) <- ccRCC.clin$Sample.ID
+data <- cbind(phenotype,t(ccRCC.Data))
+cox.genes <- foreach(i = rownames(ccRCC.Data), .combine = rbind) %do% {
+  cox = coxph(Surv(data$time, data$status) ~ data[, i])
+  coef = summary(cox)$coefficients[c(1,5)]
+  c.index = cox$concordance["concordance"]
+  #
+  cox.test = cox.zph(cox)
+  cox.test.p = cox.test$table["GLOBAL","p"]
+  return(c(coef, c.index, cox.test.p))
+}
+rownames(cox.genes) <- rownames(ccRCC.Data)
+saveRDS(cox.genes, "combBulk/TCGA_Cox/Temp_RDS/Cox.asso.genes.rds")
+# NMF
+cox.genes <- data.frame(cox.genes)
+cox.genes[, "p.adjust"] <- p.adjust(cox.genes[,2], method = "BH")
+cox.genes.type <- ifelse(cox.genes$p.adjust <0.01 & cox.genes[,4]>0.05, ifelse(cox.genes[,1]<0, 1, -1), 0)
+names(cox.genes.type) <- rownames(cox.genes)
+
+cl <- makeCluster(4)
+registerDoParallel(cl)
+# bulk_input <- NMF_bulk_input(data = ccRCC.Data,
+#                              genelen = GeneLen)
+saveRDS(bulk_input, "combBulk/TCGA_Cox/Temp_RDS/bulk_input.rds")
+bulk_input <- readRDS("combBulk/TCGA_Cox/Temp_RDS/bulk_input.rds")
+neg.nmf <- NMF_bulk(bulk_input,
+                     max_n_clu = 9,
+                     used.genes = names(cox.genes.type)[cox.genes.type < 0])
+pos.nmf <- NMF_bulk(ccRCC.Data, min_n_clu = 8,
+                    max_n_clu = 15,
+                    used.genes = names(cox.genes.type)[cox.genes.type > 0])
+stopImplicitCluster()
+stopCluster(cl)
+saveRDS(neg.nmf, "combBulk/TCGA_Cox/Temp_RDS/cox.neg.nmf.rds")
+saveRDS(pos.nmf, "combBulk/TCGA_Cox/Temp_RDS/cox.pos.nmf_8.rds")
+pos.nmf <- readRDS("combBulk/TCGA_Cox/Temp_RDS/cox.pos.nmf.rds")
+#coxph(Surv(phenotype$time, phenotype$status) ~ test@fit@H[1,])
+# rank selection
+cophs <- data.frame(n_clusters = names(neg.nmf$consensus),
+                    Cophenetic = neg.nmf$measures$cophenetic)
+best_rank <- biggest_drop(cophs, min_cophenetic = 0.95)
+# factor effect to phenotype
+n_cluster = "7"
+nmfbest <- neg.nmf$fit[[n_cluster]]
+# pdf(paste0("combBulk/TCGA_Cox/Figures/consensusmap_neg_", n_cluster, ".pdf"))
+# consensusmap(nmfbest)
+# dev.off()
+train_H <- nmfbest@fit@H
+rownames(train_H) <- paste0("Factor_", 1:nrow(train_H))
+# train_H <- apply(train_H, 2, function(x){
+#   x/sum(x)
+# })
+# Heatmap(train_H, show_column_names = F)
+H_p <- apply(train_H, 1, function(x){
+  cox = coxph(Surv(phenotype$time, phenotype$status) ~ x)
+  coef = summary(cox)$coefficients[c(1,5)]
+  c.index = cox$concordance["concordance"]
+  # 
+  cox.test = cox.zph(cox)
+  cox.test.p = cox.test$table["GLOBAL","p"]
+  res <- c(coef, c.index, cox.test.p)
+  names(res) <- c("coef", "coef.p", "c.index", "cox.test.p")
+  return(res)
+})
+p.sig <- round(H_p["coef.p", ], 2)
+W.type <- ifelse(p.sig <= 0.05, 
+                 ifelse(p.sig >= 0.01, "*", 
+                        ifelse(p.sig >= 0.001, "**", "***")), "N")
+W.type <- paste0(ifelse(H_p["coef",] >0, "-", "+"), W.type)
+# prediction in st
+W <- basis(nmfbest)
+colnames(W) <- paste0("Factor_", 1:nrow(train_H))
+names(W.type) <- paste0("Factor_", 1:nrow(train_H))
+# Heatmap(W, show_row_names = F , cluster_columns = F)
+
+# neg_nmf_pred.lt <- list()
+# for(sam in names(Spatial.list)){
+#   print(sam)
+#   st <- Spatial.list[[sam]]
+#   neg_nmf_pred.lt[[sam]] <- PredFactorinST(st, W, W.type = W.type,
+#                                   savefile = paste0("combBulk/Figures/PredfactorinST/neg_", sam, "_", n_cluster, "_cluster.pdf"))
+#   
+# }
+# saveRDS(neg_nmf_pred.lt, "combBulk/Temp_RDS/neg_nmf_pred.lt.rds")
+pos_nmf_pred.lt <- list()
+for(sam in names(Spatial.list)){
+  print(sam)
+  st <- Spatial.list[[sam]]
+  pos_nmf_pred.lt[[sam]] <- PredFactorinST(st, W, W_type = W.type,
+                                           savefile = paste0("combBulk/TCGA_Cox/Figures/PredfactorinST/pos/pos_", sam, "_", n_cluster, "_cluster.pdf"))
+  
+}
+saveRDS(pos_nmf_pred.lt, "combBulk/TCGA_Cox/Temp_RDS/pos_nmf_pred_8.lt.rds")
+stopImplicitCluster()
+stopCluster(cl)
+# # H = nmf_reference@fit@H
+# Heatmap(H, show_column_names = F)
+# 
+# SpotVisualize(st, pos = st_pos, meta = H[2,], return = T) +
+#   scale_color_gradientn(colours = c("#3d5a80","#fff3b0","#ce4257"))
+# Heatmap(W, show_row_names = F) + HeatmapAnnotation(df = cox.genes.type[rownames(W)], which = "row")
+# ssgsea of hallmark geneset
+score <- GSVA::gsva(as.matrix(ccRCC.Data), hallmark, method = "ssgsea")
+table(colnames(score) == rownames(phenotype))
+score_p <- apply(score, 1, function(x){
+  cox = coxph(Surv(phenotype$time, phenotype$status) ~ x)
+  coef = summary(cox)$coefficients[c(1,5)]
+  c.index = cox$concordance["concordance"]
+  # 
+  cox.test = cox.zph(cox)
+  cox.test.p = cox.test$table["GLOBAL","p"]
+  res <- c(coef, c.index, cox.test.p)
+  names(res) <- c("coef", "coef.p", "c.index", "cox.test.p")
+  return(res)
+})
+score_p <- t(score_p)
+rownames(score_p) <- tolower(rownames(score_p))

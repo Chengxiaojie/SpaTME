@@ -1,0 +1,9 @@
+"0","stf = GetGsetSigScore(expr = expr,
+                      stf = stf,
+                      category = ""MSigDB"",
+                      types = c(""HALLMARK""),
+                      method = ""AddModuleScore"",
+                      scale = T)
+"
+"2","Calculating HALLMARK geneset
+"

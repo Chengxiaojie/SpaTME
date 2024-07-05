@@ -1,0 +1,129 @@
+library(stringr)
+STcoordCheck <- function(st, 
+                         reset = F,
+                         platform = "visium",
+                         hexagon.convert = F,
+                         hexagon.direct = c("horizontal", "vertical"),
+                         verbose = T){
+  # hexagon.direct:
+  # horizontal, spots to left and right, two above, two below
+  # vertical, spots to top and bottom , two left and two right
+  if (reset) {
+    st@meta.data <- st@meta.data[, setdiff(colnames(st@meta.data), c("x", "y"))]
+  }
+  if (all(c("x", "y") %in% colnames(st@meta.data))){
+    if (verbose){
+      message("Coordinate is ok!")
+    }
+  }else {
+    if (length(st@images) !=0){
+      pos <- st@images[[1]]@coordinates[, c("row", "col")]
+      if (verbose){
+        message("Get coordinate information from @image")
+      }
+    }else{
+      # check if the spot names contain the coordinate information
+      if (grepl("x", colnames(st)[1])){
+        pos <- str_split_fixed(colnames(st), "x", 2)
+        if (verbose){
+          message("Get coordinate information from spot names")
+        }
+      }else {
+        stop("Please provide coordinate information(x, y) in meta.data !")
+      }
+    }
+    colnames(pos) <- c("x", "y")
+    pos <- apply(pos, 2, as.numeric)
+    rownames(pos) <- colnames(st)
+    st <- AddMetaData(st, 
+                      metadata = data.frame(pos))
+  }
+  if (platform == "visium"){
+    pos <- st@meta.data[, c("x", "y")]
+    if (hexagon.convert) {
+      if (verbose){
+        message("Converting coordinate position to hexagon shape!")
+      }
+      if (hexagon.direct == "horizontal"){
+        st@meta.data[, "y"] <- st@meta.data[, "y"]*(sqrt(3)) %>%
+          round(2)
+      } else if (hexagon.direct == "vertical"){
+        st@meta.data[, "x"] <- st@meta.data[, "x"]*(sqrt(3)) %>%
+          round(2)
+      } else {
+        stop("Please provide hexagon.direct value for visium : horizontal or vertical")
+      }
+    } else if ( ! all(pos[, "x"] %% 1 ==0 & pos[, "y"] %% 1 ==0)) {
+      warning("Coordinates do not fit hexagon shape ! It is recommended to run with hexagon.direct = True")
+    }
+  }
+  print("Completing coordinate check!")
+  return(st)
+}
+
+SePreprocess <- function(se,
+                         assay = "RNA",
+                         mt.qc = NULL,
+                         norm.method = "SCT",
+                         variable.features.n = 3000,
+                         dims = 1:20,
+                         cluster.resolution = 0.8,
+                         verbose = F
+){
+  if (is.null(mt.qc)){
+    mt.qc <- ifelse(assay == "RNA", T, F)
+  }
+  if (mt.qc){
+    se[["percent.mt"]] = PercentageFeatureSet(se, assay = assay, pattern = "^MT-")
+    se <- subset(x = se,
+                 subset = percent.mt < 30)
+  }
+  # Normalization
+  if (norm.method == "SCT"){
+    se <- SCTransform(object = se,
+                      assay = assay,
+                      variable.features.n = variable.features.n,
+                      verbose = verbose)
+  }else{
+    se <- NormalizeData(object = se, 
+                      normalization.method = norm.method,
+                      verbose = verbose)
+    se <- FindVariableFeatures(object = se, 
+                               nfeatures = variable.features.n,
+                               verbose = verbose)
+    se <- ScaleData(object = se, 
+                    verbose = verbose)
+  }
+  # dimensional reduction and clustering
+  se <- RunPCA(object = se, 
+               verbose = verbose)
+  se <- FindNeighbors(object = se, 
+                      dims = dims, 
+                      verbose = verbose)
+  se <- FindClusters(object = se, 
+                     resolution = cluster.resolution, 
+                     verbose = verbose)
+  se <- RunTSNE(object = se, 
+                dims = dims)
+  se <- RunUMAP(object = se,
+                dims = dims, 
+                verbose = verbose)
+}
+#
+STRefCellScore <- function(st,
+                           sc.ref,
+                           cell.labelname,
+                           normalization.method = "SCT"){
+  anchors <- FindTransferAnchors(reference = sc.ref, 
+                                 query = st, 
+                                 normalization.method = normalization.method)
+  predictions.assay <- TransferData(anchorset = anchors, 
+                                    refdata = sc.ref@meta.data[, cell.labelname], 
+                                    prediction.assay = TRUE,
+                                    weight.reduction = st[["pca"]], 
+                                    dims = 1:30)
+  st[["predictions"]] <- predictions.assay
+  DefaultAssay(st) <- "predictions"
+  return(st)
+}
+

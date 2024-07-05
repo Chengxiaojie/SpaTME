@@ -1,0 +1,137 @@
+# Wed Aug  9 17:03:47 2023
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project: NMF analysis for TCGA pancancer datasets
+# phenotype score
+# # load TCGA RNA expression data
+library(dplyr)
+library(stringr)
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/pheno_program_NMF.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/FeatureSelection.R")
+cancer <- commandArgs(trailingOnly = T)[1]
+print(cancer)
+outdir <- paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGA_NMF/", cancer, "/")
+if (!dir.exists(outdir)) {
+  dir.create(outdir)
+}
+dataset <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/", "TCGA_",cancer, ".rds"))
+names(dataset)[1:3] <- str_split_fixed(names(dataset)[1:3], "\\.", 3)[, 3]
+Expr_TPM <- dataset[["htseq_log2TPM"]]
+barcode <- substr(colnames(Expr_TPM), 14, 15) %>% as.numeric()
+Expr_TPM <- Expr_TPM[, barcode >= 1 & barcode <10]
+# gene filter
+bulk_input <- NMF_bulk_input(data = Expr_TPM,
+                             totpm = F,
+                             pt_gene_exp = 0.2,
+                             base_gene_exp = 1,
+                             dolog = F)
+# phenotype
+phenotype <- as.data.frame(dataset$survival.tsv)
+rownames(phenotype) <- phenotype$sample
+phenotype <- phenotype[, c("OS", "OS.time")]
+colnames(phenotype) <- c("status", "time")
+sams <- intersect(colnames(bulk_input), rownames(phenotype))
+phenotype <- phenotype[sams, ]
+bulk_input <- bulk_input[, sams]
+asso.genes <- PhenoAssoFeatures(data = bulk_input,
+                                phenotype = phenotype,
+                                method = "cox",
+                                p.adj = F,
+                                p.cut = 0.01)
+message(paste0("There are ", nrow(asso.genes), " phenotype-related genes"))
+asso.genes[, "cox.genes.type"] <- ifelse(asso.genes$coef<0, "pos", "neg")
+table(asso.genes$cox.genes.type)
+# NMF analysis
+used.genes <- split(rownames(asso.genes), asso.genes$cox.genes.type)
+# used.genes[["all"]] <- rownames(asso.genes)[asso.genes$cox.genes.type != "ns"]
+#
+nmf.lt <- list()
+for(type in names(used.genes)){
+  if (length(used.genes[[type]])<50) {
+    warning(paste0("phenotype-related genes of ", type, "are less than 50, and will not be used for anaylsis"))
+    nmf.lt[[type]] <- NULL
+    next
+  }
+  nmfrank <- RunNMFtest(expr = bulk_input,
+                    used.genes = used.genes[[type]],
+                    rank = seq(2, 10),
+                    nrun = 30,
+                    return.all = T,
+                    seed = 123456,
+                    min_cophenetic = 0.95,
+                    verbose = T,
+                    options = "vp6")
+  nmf <- nmfrank$nmf$fit[[nmfrank$best_rank]]
+  W_type <- HPhenoAsso(nmfobj = nmf,
+                       phenotype = phenotype,
+                       method = "cox",
+                       p.cut = 1,
+                       cox.test.cut = 0,
+                       p.adj = F,
+                       verbose = F)
+  #
+  savedir <- paste0(outdir, type)
+  dir.create(savedir, recursive = T)
+  pdf(paste0(savedir, "/nmf_consensusplot.pdf"))
+  consensusmap(nmf)
+  dev.off()
+  # meta-program
+  # top metagenes
+  W <- basis(nmf)
+  colnames(W) <- paste0(names(W_type), "_", W_type)
+  top_num <- round(0.5*nrow(W)/ncol(W))
+  top_num <- ifelse(top_num >= 200, 200, top_num)
+  mg_vt <- FactorMetagenes(ref_W = W,
+                           method = "top",
+                           plot = F,
+                           top_num = top_num,
+                           plotfile = paste0(savedir, "/factor_metagenes.pdf"))
+  mg_lt <- split(x = names(mg_vt), f = mg_vt)
+  ## enrichment analysis of metagenes
+  pdf(paste0(savedir, "/factor_enrichPathway_enrich.pdf"), width = 10, height = 12)
+  mg_enrich <- FactorEnrichAnalysis(mg_vt = mg_vt,
+                                    fun = "enrichPathway",
+                                    pAdjustMethod = "none"
+  )
+  dev.off()
+  nmf.lt[[type]] <- list(nmf = nmfrank,
+                         W_type = W_type,
+                         mg_vt = mg_vt,
+                         mg_lt = mg_lt,
+                         mg_enrich = mg_enrich)
+}
+saveRDS(nmf.lt, paste0(outdir, "nmf.lt.rds"))
+# # cox plot
+library(survival)
+library(survminer)
+# phenotype
+phenotype <- as.data.frame(dataset$survival.tsv)
+rownames(phenotype) <- phenotype$sample
+phenotype <- phenotype[, c("OS", "OS.time")]
+colnames(phenotype) <- c("status", "time")
+phenotype$time <- phenotype$time/(365.24/12) %>% round(4)
+for(type in c("pos", "neg")) {
+  savedir <- paste0(outdir, type, "/SurvPlot/")
+  if (! dir.exists(savedir)){
+    dir.create(savedir, recursive = T)
+  }
+  best_rank <- nmf.lt[[type]]$nmf$best_rank
+  nmf <- nmf.lt[[type]]$nmf$nmf$fit[[best_rank]]
+  H <- nmf@fit@H
+  for (i in rownames(H)) {
+    group <- ifelse(H[i,] > mean(H[i,]), "High_Score", "Low_Score")
+    data <- merge(phenotype, data.frame(group), by = 0)
+    fit_os <- survfit(Surv(time, status) ~ group, data = data)
+    pdf(file = paste0(savedir, i, "_surv.pdf"),height = 6,width = 6, onefile = F)
+    plot <- ggsurvplot(fit = fit_os, data = data, pval=TRUE, legend.title = paste0(type, "_", i), legend = c(0.8,0.9), palette =c("#c32f27", "#336699"),
+                       size=1.5, pval.size=7, #legend.labs=c(paste("High (n=",num["High"],")",sep=""),paste("Low (n=",num["Low"],")",sep="")),
+                       # xlab="Months",ylab="Probability of overall survival",
+                       ggtheme=theme(text = element_text(size=19), legend.text = element_text(size=16),
+                                     axis.text = element_text(color="black",size=20),legend.direction = "vertical",
+                                     panel.background=element_rect(fill='transparent'),
+                                     axis.line=element_line(color="black",size=0.6),plot.margin=unit(rep(1.5,4), 'lines')))
+    print(plot)
+    dev.off()
+  }
+}

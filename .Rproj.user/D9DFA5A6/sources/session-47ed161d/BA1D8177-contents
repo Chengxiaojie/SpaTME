@@ -1,0 +1,16 @@
+---
+title: "test"
+author: "Xiaojie Cheng"
+date: "2024-06-27"
+output: html_document
+---
+
+```{r}
+library(SpaTME)
+Bulk_data <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/SpaTME/test_data/TCGA_KIRC.rds")
+bulk_input <- NMF_bulk_input(data = Bulk_data$Expr_TPM, pt_gene_exp = 0.2, totpm = F,
+                             base_gene_exp = 1, dolog = F)
+asso.genes <- PhenoAssoFeatures(data = bulk_input[1:200,], phenotype = Bulk_data$phenotype, 
+                                method = "cox", p.cut = 0.01)
+```
+
