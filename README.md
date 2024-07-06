@@ -17,5 +17,5 @@ devtools::install_github("Chengxiaojie/SpaTME")
 
 ## Demonstration
 
-For examples of typical SpaTME usage, please see our [package vignette].
+For examples of typical SpaTME usage, please see our [package vignette](https://github.com/Chengxiaojie/SpaTME/blob/main/vignettes/Pipeline.html).
 
