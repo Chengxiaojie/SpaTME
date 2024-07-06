@@ -57,7 +57,7 @@ SpotVisualize(st, title = "imprint.65sig",
 ```
 
 SpaTME allows identification of gene co-expression modules utilizing `WGCNA`. Here, we use the top 2000 Spatially variable genes (SVGs) identified previously as an example.
-```{r BulidCGnet, include=F, warning=FALSE, fig.width= 8, fig.height= 6}
+```{r BulidCGnet, warning=FALSE, fig.width= 8, fig.height= 6}
 topSVGs <- readRDS("~/test_data/topSVGs.rds")
 data <- st@assays$SCT@data[topSVGs,]
 # gene co-expression module
@@ -184,7 +184,7 @@ rownames(comb.fea) <- rownames(stf@Position)
 TLS.fea <- CalTLSfea(data = comb.fea, st_pos = stf@Position,
                      cluster = stf@Annotation$bayes_cluster,
                      r.dist = 2, method = "weighted", verbose = F)
-SpotVisualize(pos = stf@Position, size = 2, limits = c(0, 1),
+SpotVisualize(pos = stf@Position, size = 1.5, limits = c(0, 1),
                   meta = TLS.fea$TLS.score, title = "TLS score")
 ```
 

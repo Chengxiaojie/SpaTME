@@ -1,0 +1,11 @@
+library(copykat)
+library(dplyr)
+args <- commandArgs(trailingOnly = TRUE)
+
+rds <- args[1]
+#rds <- "~/ST_scRNAseq/GSE111672/sc_PDAC_A_Data.rds"
+samplename <- strsplit(basename(rds), "\\.")[[1]][1]
+rawmatrix <- readRDS(rds)
+copykat.test <- copykat(rawmat = rawmatrix, id.type="S", cell.line="no", ngene.chr=5, win.size=25, KS.cut=0.15, sam.name=samplename, distance="euclidean", n.cores= 12)
+# pred.test <- data.frame(copykat.test$prediction)
+# CNA.test <- data.frame(copykat.test$CNAmat)

@@ -1,0 +1,1 @@
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
