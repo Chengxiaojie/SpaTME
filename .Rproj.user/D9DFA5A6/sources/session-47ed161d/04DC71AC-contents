@@ -1,0 +1,30 @@
+library(copykat)
+library(dplyr)
+args <- commandArgs(trailingOnly = TRUE)
+
+rds <- args[1]
+#rds <- "~/ST_scRNAseq/GSE111672/sc_PDAC_A_Data.rds"
+samplename <- strsplit(basename(rds), "\\.")[[1]][1]
+rawmatrix <- readRDS(rds)
+copykat.test <- copykat(rawmat = rawmatrix, id.type="S", cell.line="no", ngene.chr=5, win.size=25, KS.cut=0.15, sam.name=samplename, distance="euclidean", n.cores= 12)
+# pred.test <- data.frame(copykat.test$prediction)
+# CNA.test <- data.frame(copykat.test$CNAmat)
+library(copykat)
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/pipeline/Temp_RDS/Spatial.list.rds")
+outdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/copykat/"
+sam <- "A1"
+copykat.test <- copykat(rawmat = as.matrix(Spatial.list[[sam]]@assays$RNA@counts),
+                        id.type="S", cell.line="no",
+                        ngene.chr=1, win.size=25,
+                        KS.cut=0.1,
+                        sam.name = sam,
+                        distance="euclidean", n.cores= 10)
+savefile <- paste0(outdir, sam)
+if (! dir.exists(savefile)){
+  dir.create(savefile)
+}
+setwd(savefile)
+saveRDS(copykat.test, paste0(savefile, "/copykat.test.rds"))
+

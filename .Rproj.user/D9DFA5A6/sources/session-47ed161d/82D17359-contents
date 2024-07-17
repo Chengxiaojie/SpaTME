@@ -1,1 +1,2 @@
 Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+sams <- c("GSM5924032_ffpe_c_4", "GSM5924033_ffpe_c_7", "GSM5924034_ffpe_c_10", "GSM5924046_frozen_b_1")

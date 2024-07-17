@@ -1,0 +1,689 @@
+# Sun Nov 12 12:49:09 2023
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project:
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/base.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/Se_preprocess.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/ST_features.2.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/LR_interaction.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/TN_interface.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/BayesSpace.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/pheno_program_NMF.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/unit.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/FeatureSelection.R")
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+library(xgboost)
+library(PRROC)
+outdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/HRA000437/"
+Spatial.list <- readRDS(paste0(outdir, "/Temp_RDS/Spatial.list.rds"))
+stf.lt <- list()
+for (sam in names(Spatial.list)){
+  # Spatial.list[[sam]] <- SePreprocess(Spatial.list[[sam]],
+  #                                     assay = "Spatial")
+  cell.abun <- read.table(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/HRA000437/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1, check.names = F)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  stf.lt[[sam]] <- CreateStfObj(st = Spatial.list[[sam]],
+                      assay = "SCT",
+                      slot = "data",
+                      cell.abun = cell.abun,
+                      norm = T,
+                      min.prop = 0.05,
+                      init.fea = c("Position", "CellColocal", "SpeGenes"),
+                      verbose = T
+  )
+}
+#
+#a = stf.lt[[1]]@CellEnrich
+colnames(a) <-
+celltypes <- unique(scRNA.se$DefineTypes)
+names(celltypes) <- c("Hepatocytes", "Fibroblast", "Pericyte", "Fibroblast", "Endothelial", "Endothelial",
+                      "Endothelial", "Endothelial", "Endothelial", "Endothelial", "Endothelial", "Endothelial", "Endothelial",
+                      "Macrophage", "Macrophage", "Dendritic.cells", "Monocyte", "Monocyte", "Macrophage", "Macrophage", "Macrophage",
+                      "Dendritic.cells", "Dendritic.cells", "Neutrophil", "Mast", "T.cells", "NK", "T.cells", "T.cells", "NKT", "T.cells", "NK", "T.cells",
+                      "T.cells", "T.cells", "T.cells", "NK", "T.cells", "Plasma/B.cells", "Plasma/B.cells", "Plasma/B.cells", "Plasma/B.cells", "Plasma/B.cells", "Hepatocytes",
+                      "bipotent", "HCC", "Hepatocytes", "HCC")
+# re-
+for( sam in names(stf.lt)) {
+  cell.abun <- read.table(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/HRA000437/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1, check.names = F)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  cell.abun <- aggregate(t(cell.abun[, celltypes]), by = list(names(celltypes)), sum) %>%
+    tibble::column_to_rownames("Group.1")
+  stf.lt[[sam]] <- CreateStfObj(st = Spatial.list[[sam]],
+                                stf = stf.lt[[sam]],
+                                assay = "SCT",
+                                slot = "data",
+                                cell.abun = t(cell.abun),
+                                norm = T,
+                                min.prop = 0.05,
+                                init.fea = c("Position", "CellColocal", "SpeGenes"),
+                                verbose = T
+  )
+}
+
+immune.cells <- sort(c("Plasma/B.cells", "T.cells", "Dendritic.cells", "Macrophage", "Monocyte", "NK"))
+for (sam in names(stf.lt)) {
+  data <- stf.lt[[sam]]@CellEnrich
+  data <- data/rowSums(data)
+  data <- data[, immune.cells]
+  # immune abundance
+  imm.enrich <- rowSums(data)
+  # immune diversity
+  #data <- apply(data, 2, Norm01)
+  cellColocal <- combn(x = colnames(data),
+                       m = 2,
+                       FUN = function(x){
+                         Norm01(data[, x[1]]) * Norm01(data[, x[2]])
+                       })
+  cellColocal <- round(cellColocal, 2)
+  rownames(cellColocal) <- rownames(data)
+  colnames(cellColocal) <- combn(x = colnames(data),
+                                 m = 2,
+                                 FUN = function(x){
+                                   paste(sort(c(x[1], x[2])), collapse = "_")
+                                 })
+  imm.diver <- apply(cellColocal, 1, function(x){
+    sum(x >= 0.1)
+  })
+  imm.diver <- imm.diver/ncol(cellColocal)
+  imm.diver <- round(imm.diver, 2)
+  stf.lt[[sam]]@Others <- list(data = data.frame(data, check.names = F),
+                               cellColocal = data.frame(cellColocal, check.names = F),
+                               imminf = data.frame(imm.enrich, imm.diver))
+}
+# calculating gene set enrichment scores for curated signatures
+for(sam in names(Spatial.list)){
+  print(sam)
+  expr <- GetAssayData(object = Spatial.list[[sam]],
+                       assay = "SCT",
+                       slot = "data")
+  expr <- as.matrix(expr)
+  stf.lt[[sam]] = GetGsetSigScore(expr = expr,
+                                  stf = stf.lt[[sam]],
+                                  category = "CuratedSig",
+                                  types = c("Immune"),
+                                  method = "AddModuleScore",
+                                  scale = F,
+                                  verbose = F)
+}
+#saveRDS(stf.lt, paste0(outdir, "/pipeline/stf.lt.rds"))
+#saveRDS(Spatial.list, paste0(outdir, "/Temp_RDS/Spatial.list.rds"))
+stf.lt <- readRDS(paste0(outdir, "/pipeline/stf.lt.rds"))
+# position
+xy_reverse <- c(F, T, T, T, T,T) %>% setNames(names(Spatial.list))
+x_reverse <- c(F, T, F, F, F,F) %>% setNames(names(Spatial.list))
+y_reverse <- c(T, F, T, T, T,T) %>% setNames(names(Spatial.list))
+# BayesSpace cluster
+clu.num <- c(9,9,11,9,9,9)
+names(clu.num) <- names(Spatial.list)
+for (sam in names(Spatial.list)) {
+  # se_cluster <- length(unique(Spatial.list[[sam]]$seurat_clusters))
+  # start <- ifelse((se_cluster - 6) < 3, 3, se_cluster - 6)
+  # qs <- seq(start, se_cluster + 6)
+  # print(qs)
+  # sce <- BayesCluster(st = Spatial.list[[sam]],
+  #                     assay = "Spatial",
+  #                     platfrom = "Visium",
+  #                     outdir = paste0(outdir, "/BayesSpace/qplot/", sam, "_"),
+  #                     num.clu = clu.num[sam],
+  #                     #qs = qs,
+  #                     verbose = T)
+  # saveRDS(sce, paste0(outdir, "pipeline/BayesSpace/sce/", sam, "_sce.rds"))
+  sce <- readRDS(paste0(outdir, "pipeline/BayesSpace/sce/", sam, "_sce.rds"))
+   stf.lt[[sam]]@Annotation <- data.frame(row.names = rownames(stf.lt[[sam]]@Position))
+   stf.lt[[sam]]@Annotation[, "seurat_clusters"] <- Spatial.list[[sam]]$seurat_clusters
+  stf.lt[[sam]]@Annotation[, "bayes_cluster"] <- sce@colData@listData$spatial.cluster
+  #table(stf@Annotation[, "bayes_cluster"])
+}
+# TLS annotation
+TLS.anno <- read.table(paste0(outdir, "pipeline/TLS/TLS_annotation/TLS-anno.txt"),header = T)
+#sams = c("HCC-1L", "HCC-2L", "HCC-3L", "HCC-4L")
+TLS.anno$comb.barcode <- str_split_fixed(TLS.anno$comb.barcode, "\\.", 2)[,1]
+TLS.anno$comb.barcode <- paste0(TLS.anno$comb.barcode, "-1")
+for (sam in names(stf.lt)) {
+  stf.lt[[sam]]@Annotation[, "TLS.anno"] <- "nonTLS"
+  tem <- subset(TLS.anno, sample.ident == sam)
+  stf.lt[[sam]]@Annotation[tem$comb.barcode, "TLS.anno"] <- "TLS"
+  pos <- stf.lt[[sam]]@Position
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  SpotVisualize(pos = pos,
+                legend.name = "anno",
+                meta = stf.lt[[sam]]@Annotation[, "TLS.anno"],
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                savefile = paste0(outdir, "pipeline/TLS/TLS_annotation/", sam, "_TLS.pdf"),
+                size = 2, p.width = 7, p.height = 7, title = sam,
+                cha.col = c(TLS = "#c9a227", nonTLS = "#ced4da"))
+}
+# region annotation
+region.anno <- read.table(paste0(outdir, "pipeline/TN_interface/LeadingEdge-anno.txt"),header = T)
+region.anno$comb.barcode <- str_split_fixed(region.anno$comb.barcode, "\\.", 2)[,1]
+region.anno$comb.barcode <- paste0(region.anno$comb.barcode, "-1")
+for (sam in names(stf.lt)) {
+  tem <- subset(region.anno, sample.ident == sam)
+  stf.lt[[sam]]@Annotation[tem$comb.barcode, "region.anno"] <- tem$region
+  pos <- stf.lt[[sam]]@Position
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  SpotVisualize(pos = pos,
+                legend.name = "anno",
+                meta = stf.lt[[sam]]@Annotation[, "region.anno"],
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                savefile = paste0(outdir, "pipeline/TN_interface/region_anno/", sam, ".pdf"),
+                size = 2, p.width = 7, p.height = 6.5, title = sam,
+                cha.col = c(Normal = "#679436", Transition = "#ced4da", Tumor = "#336699"))
+}
+
+# plot cluster
+for (sam in names(stf.lt)) {
+  for (i in c("bayes_cluster","seurat_clusters")) {
+    anno <- as.character(stf.lt[[sam]]@Annotation[, i])
+    anno <- paste0("domain_", anno)
+    col <- LabelMapcolor(labels = as.character(anno), assgin.col = c("domain_3" = "#f4a261"))
+    if (! dir.exists(paste0(outdir, "pipeline/ST_cluster/", i))) {
+      dir.create(paste0(outdir, "pipeline/ST_cluster/", i), recursive = T)
+    }
+    pos <- stf.lt[[sam]]@Position
+    if(xy_reverse[sam]){
+        colnames(pos) <- c("y", "x")
+    }
+    SpotVisualize(pos = pos,
+                  meta = anno,
+                  scale_y_reverse = y_reverse[sam],
+                  scale_x_reverse = x_reverse[sam],
+                  savefile = paste0(outdir, "pipeline/ST_cluster/", i, "/", sam, "_cluster.pdf"),
+                  p.height = 7.5, p.width = 7.5,
+                  size = 2,
+                  cha.col = col,
+                  title = i)
+  }
+}
+stf.lt <- readRDS(paste0(outdir, "pipeline/stf.lt.rds"))
+cl = makeCluster(5)
+registerDoParallel(cl)
+TLS.fea <- foreach(sam = names(stf.lt)) %do% {
+  CalTLSfea(stf = stf.lt[[sam]],
+            cluster = stf.lt[[sam]]@Annotation$bayes_cluster,
+            r.dist = 4,
+            method = "weighted",
+            adjust = 2
+  )
+}
+names(TLS.fea) <- names(stf.lt)
+#saveRDS(TLS.fea, paste0(outdir, "/pipeline/TLS/TLS.fea.rds"))
+stopImplicitCluster()
+stopCluster(cl)
+TLS.fea <- readRDS(paste0(outdir, "/pipeline/TLS/TLS.fea.rds"))
+# plot
+for (sam in names(TLS.fea)){
+  meta <- TLS.fea[[sam]]$TLS.score
+  stf.lt[[sam]]@Annotation[, "TLS.score"] <- meta
+  pos = stf.lt[[sam]]@Position
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  SpotVisualize(pos = pos,
+                meta = Norm01(meta),
+                size = 2.5, p.width = 7, p.height = 7,
+                title = "TLS score",
+                num.low = "#336699",
+                limits = c(0, 1),
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                savefile = paste0(outdir, "pipeline/TLS/TLS_score/", sam, "_TLS.score.pdf"))
+  for (sig in c("orig.fea", "unit.fea", "signi.fea")) {
+    savefile <- paste0(outdir, "pipeline/TLS/TLS_score/", sam, "/", sig)
+    if (! dir.exists(savefile)) {
+      dir.create(savefile, recursive = T)
+    }
+    for (fea in colnames(TLS.fea[[sam]]$signi.fea)){
+      meta <- TLS.fea[[sam]][[sig]][, fea]
+      SpotVisualize(pos = pos,
+                    meta = Norm01(meta),
+                    size = 2.5, p.width = 7, p.height = 7,
+                    title = fea,
+                    num.low = "#336699",
+                    limits = c(0, 1),
+                    scale_y_reverse = y_reverse[sam],
+                    scale_x_reverse = x_reverse[sam],
+                    savefile = paste0(savefile, "/", gsub("\\/", ".",fea), ".pdf"))
+    }
+  }
+}
+
+# statistic
+library(ggpubr)
+library(rstatix)
+for (sam in names(TLS.fea)){
+  print(sam)
+  meta <- TLS.fea[[sam]]$TLS.score
+  stf.lt[[sam]]@Annotation[, "TLS.score"] <- meta
+  data <- data.frame(anno = stf.lt[[sam]]@Annotation$TLS.anno,
+                     TLS.score = meta)
+  # stat.test <- data %>%
+  #   wilcox_test(TLS.score ~ anno, p.adjust.method = "BH") %>%
+  #   add_significance("p") %>% add_x_position(x = "anno")
+  pdf(paste0(outdir, "pipeline/TLS/TLS_annotation/", sam, "_boxplot.pdf"), width = 4.5, height = 4)
+  plot <- ggplot(data, aes(x = anno, y = TLS.score, fill = anno)) + geom_boxplot() + theme_bw() +
+    theme(panel.grid.major=element_blank(), text = element_text(size = 18), axis.title = element_text(size = 16)) +
+    scale_fill_manual(values = c(TLS = "#c9a227", nonTLS = "#ced4da")) #+
+    # stat_pvalue_manual(stat.test, y.position = c(0.8), tip.length = 0.01, size = 5)
+  print(plot)
+  dev.off()
+  print(wilcox.test(data$TLS.score ~ data$anno)$p.value)
+}
+
+
+# model <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TLS/model.final.rds")
+# pred.lt <- list()
+# for(sam in names(TLS.fea)){
+#   xdata <- as.matrix(TLS.fea[[sam]]$sig.fea)
+#   xdata <- xdata[, intersect(colnames(xdata), model$feature_names)]
+#   add.fea <- setdiff(model$feature_names, colnames(xdata))
+#   if (length(add.fea) > 0){
+#     xdata <- cbind(xdata, matrix(0, nrow = nrow(xdata), ncol = length(add.fea),
+#                                  dimnames = list(rownames(xdata), add.fea)))
+#   }
+#   xdata <- xdata[, model$feature_names]
+#   xgbData <- xgb.DMatrix(data = xdata)
+#   pred_test <- predict(model, xgbData)
+#   names(pred_test) <- rownames(xdata)
+#   pred.lt[[sam]] <- pred_test
+#   stf.lt[[sam]]@Annotation[, "TLSpred"] <- pred_test
+#   if (! dir.exists(paste0(outdir, "pipeline/TLS/", sam))) {
+#     dir.create(paste0(outdir, "pipeline/TLS/", sam))
+#   }
+#   pdf(paste0(outdir, "pipeline/TLS/", sam, "/TLS_pred.pdf"), width = 8, height = 8)
+#   pos <- Spatial.list[[sam]]@meta.data[, c("x", "y")]
+#   if(xy_reverse[sam]){
+#     colnames(pos) <- c("y", "x")
+#   }
+#   SpotVisualize(pos = pos, #mid.p = 0.5,
+#                 meta = pred_test,size = 2.5, scale_y_reverse = y_reverse[sam],
+#                 scale_x_reverse = x_reverse[sam], limits = c(0,1))
+#   dev.off()
+#   # score cut: 0.8
+#   pdf(paste0(outdir, "pipeline/TLS/", sam, "/cut0.75.pdf"), width = 8, height = 8)
+#   TLS <- ifelse(pred_test >= 0.75, "TLS", "nonTLS")
+#   SpotVisualize(pos = pos,
+#                 meta = TLS,size = 2.5, scale_y_reverse = T,
+#                 cha.col = c("TLS" = "#c32f27", "nonTLS" = "#ced4da"))
+#   dev.off()
+# }
+# saveRDS(stf.lt, paste0(outdir, "pipeline/stf.lt.rds"))
+# saveRDS(pred.lt, paste0(outdir, "pipeline/pred.lt.rds"))
+# signature in samples
+# for (sam in names(TLS.fea)){
+#   stf <- stf.lt[[sam]]
+#   sig <- stf@GsetSig$CuratedSig$Immune$TLS
+#   cell.fea <- stf@Others
+#   names(cell.fea) <- NULL
+#   comb.fea <- unlist(cell.fea, recursive = F)
+#   comb.fea <- do.call(cbind, c(comb.fea, sig))
+#   colnames(comb.fea) <- gsub("\\/", "-", colnames(comb.fea))
+#   pos <- Spatial.list[[sam]]@meta.data[, c("x", "y")]
+#   if(xy_reverse[sam]){
+#     colnames(pos) <- c("y", "x")
+#   }
+#   for (fea in c("LC.50sig", "imprint.65sig")){#, "Plasma-B.cells_T.cells")){
+#     pdf(paste0(outdir, "pipeline/TLS/", sam, "/", fea, "ture.pdf"), width = 8, height = 8)
+#     SpotVisualize(pos = pos, num.mid = "white",
+#                   #meta = comb.fea[, fea],
+#                   meta = TLS.fea[[sam]]$ture.fea[, fea],
+#                   size = 2.5, scale_y_reverse = y_reverse[sam],
+#                   scale_x_reverse = x_reverse[sam])
+#     dev.off()
+#   }
+# }
+# tumor-normal boundary
+outdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/HRA000437/"
+for (sam in names(Spatial.list)) {
+  print(sam)
+  if (!dir.exists(paste0(outdir, "pipeline//TN_interface/", sam))) {
+    dir.create(paste0(outdir, "pipeline//TN_interface/", sam), recursive = T)
+  }
+  # cell.abun <- read.table(paste0("/home/chengxj/ST_scRNAseq/GSE175540/cell2location/ccRCC202212/", sam,"/", sam, ".cell.abundance.txt"),
+  #                         sep = "\t", header = T, row.names = 1)
+  # colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  cell.abun <- read.table(paste0("/home/chengxj/ST_scRNAseq/HRA000437/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  abun.all <- rowSums(cell.abun)
+  abun.all <- abun.all/max(abun.all)
+  cell.abun <- cell.abun/rowSums(cell.abun)
+  ES <- rowSums(cell.abun[, c("HCC", "Proliferating.HCC")])
+  ES <- ES*abun.all
+  ES <- ES/max(ES)
+  pos <- Spatial.list[[sam]]@meta.data[, c("x", "y")]
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  SpotVisualize(pos = pos,
+                meta = ES,
+                savefile = paste0(outdir, "pipeline/TN_interface/", sam, "/tumor_abundance.pdf"),
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                p.height = 8, p.width = 8, size = 2.8,
+                num.high = "#c32f27", num.mid = "#fcf5c7", num.low = "#0077b6",
+                title = "Tumor abundance")
+  edge_score <- TedgeScore(ES = ES,
+                           st_pos = stf.lt[[sam]]@Position,
+                           cluster = stf.lt[[sam]]@Annotation$bayes_cluster,
+                           r.dist = 2)
+  SpotVisualize(pos = pos,
+                meta = edge_score,
+                limits = c(0,0.4),
+                savefile = paste0(outdir, "pipeline/TN_interface/", sam, "/edge_score.pdf"),
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                p.height = 8, p.width = 8,#size = 2.8,
+                num.high = "#a4161a",  num.mid = "#e5614b", num.low = "#ced4da", title = "Edge.score")
+  stf.lt[[sam]]@Annotation[, "edge_score"] <- edge_score[rownames(stf.lt[[sam]]@Position)]
+  # define the boundary spots using edge_score
+}
+maxval <- rep(0.08, 6) %>% setNames(names(stf.lt))
+minval <- rep(0.04, 6) %>% setNames(names(stf.lt))
+for (sam in names(Spatial.list)) {
+  print(sam)
+  boun_reg <- BounRegDefine(x = stf.lt[[sam]]@Annotation[, "edge_score"],
+                            st_pos = stf.lt[[sam]]@Position,
+                            r.dist = 2,
+                            maxval = maxval[sam],
+                            minval = minval[sam],
+                            max.clu.pt = 0.75,
+                            boun.nei.n = 2,
+                            candi.step = 1,
+                            min.spots = 10,
+                            verbose = T)
+  pos <- Spatial.list[[sam]]@meta.data[, c("x", "y")]
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  SpotVisualize(pos = pos,
+                meta = boun_reg[rownames(stf.lt[[sam]]@Position)],
+                p.height = 8, p.width = 8,
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                savefile = paste0(outdir, "pipeline/TN_interface/", sam, "/defined_boundary", minval[sam], "_", maxval[sam],".pdf"),
+                limits = c(0,1),
+                cha.col = c(boun = "#e76f51", nonboun = "#ced4da"),
+                title = paste0("Defined TN interface; cut ", maxval[sam], "_", minval[sam]))
+  stf.lt[[sam]]@Annotation[, "boun_reg"] <- boun_reg[rownames(stf.lt[[sam]]@Position)]
+}
+for (sam in names(Spatial.list)) {
+  print(sam)
+  cell.abun <- read.table(paste0("/home/chengxj/ST_scRNAseq/HRA000437/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  abun.all <- rowSums(cell.abun)
+  abun.all <- abun.all/max(abun.all)
+  cell.abun <- cell.abun/rowSums(cell.abun)
+  ES <- rowSums(cell.abun[, c("HCC", "Proliferating.HCC")])
+  ES <- ES*abun.all
+  ES <- ES/max(ES)
+  pos <- Spatial.list[[sam]]@meta.data[, c("x", "y")]
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  spot_label = stf.lt[[sam]]@Annotation$bayes_cluster
+  names(spot_label) <- rownames(stf.lt[[sam]]@Position)
+  boun_reg <- stf.lt[[sam]]@Annotation[, "boun_reg"]
+  if (length(which(boun_reg == "boun")) ==0) {
+    alltype <- rep("others", length(boun_reg))
+  } else {
+    names(boun_reg) <- rownames(stf.lt[[sam]]@Position)
+    bountype <- BounType(boun.reg = names(boun_reg)[boun_reg == "boun"],
+                         st_pos = stf.lt[[sam]]@Position,
+                         min.type.spots = 1,
+                         nei.dist = 4,
+                         spot_label = spot_label)
+    alltype <- rep("others", length(boun_reg))
+    names(alltype) <- names(boun_reg)
+    alltype[names(bountype)] <- bountype
+  }
+  stf.lt[[sam]]@Annotation[, "boun_type"] <- alltype
+  col <- LabelMapcolor(labels = alltype,
+                       assgin.col = c(others = "#ced4da"))
+  SpotVisualize(pos = pos,
+                meta = alltype,
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                savefile = paste0(outdir, "pipeline/TN_interface/", sam, "/boun_type.pdf"),
+                p.height = 7.5, p.width = 8,
+                cha.col = col,
+                title = "Tumor-Normal boundary type")
+  # boun cluster
+  clu <- as.character(stf.lt[[sam]]@Annotation[, "bayes_cluster"])
+  clu[alltype == "others"] = "others"
+  col <- LabelMapcolor(labels = clu,
+                       assgin.col = c(others = "#ced4da"))
+  SpotVisualize(pos = pos,
+                meta = clu,
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                savefile = paste0(outdir, "pipeline/TN_interface/", sam, "/bayes_cluster.pdf"),
+                p.height = 7.5, p.width = 8,
+                cha.col = col,
+                title = "bayes_cluster")
+  # boun_class
+  if (all(alltype == "others")) {
+    boun_class <- rep("others", length(boun_reg))
+  } else {
+    boun_class <- BounClass(boun.type = stf.lt[[sam]]@Annotation$boun_type,
+                            spot.clu = as.character(stf.lt[[sam]]@Annotation$bayes_cluster),
+                            ES = ES)
+  }
+  col <- LabelMapcolor(labels = boun_class,
+                       assgin.col = c(others = "#ced4da"))
+  SpotVisualize(pos = pos,
+                meta = boun_class,
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                savefile = paste0(outdir, "pipeline/TN_interface/", sam, "/boun_class.pdf"),
+                p.height = 7.5, p.width = 8,
+                cha.col = col,
+                title = "Tumor-Normal boundary class")
+  stf.lt[[sam]]@Annotation[, "boun_class"] <- boun_class
+
+}
+
+for (sam in names(stf.lt)) {
+  cell.abun <- read.table(paste0("/home/chengxj/ST_scRNAseq/HRA000437/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  abun.all <- rowSums(cell.abun)
+  abun.all <- abun.all/max(abun.all)
+  cell.abun <- cell.abun/rowSums(cell.abun)
+  ES <- rowSums(cell.abun[, c("HCC", "Proliferating.HCC")])
+  ES <- ES*abun.all
+  ES <- ES/max(ES)
+  pos <- stf.lt[[sam]]@Position
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  # TNI with abundances
+  AbunTNIPlot(pos = pos,
+              ES = ES, stroke = 1, shape = 1,
+              size = 2.5,
+              class = stf.lt[[sam]]@Annotation[, "boun_class"],
+              title = sam,
+              scale_y_reverse = y_reverse[sam],
+              scale_x_reverse = x_reverse[sam],
+              legend.name = "Abundance",
+              legend.key.size = unit(10, "mm"),
+              savefile = paste0(outdir, "pipeline/TN_interface/Abun_TNI_1/", sam, "_abun_TNI.pdf"))
+  data <- data.frame(Abundances = ES,
+                     stf.lt[[sam]]@Annotation[names(ES), c("boun_reg","boun_class")])
+  col <- c(others = "#ced4da", T_boun = "#e9724c", N_boun = "#336699")
+  SpotVisualize(pos = pos,
+                meta = data$boun_class,
+                size = 2.5,
+                legend.name = "Class",
+                savefile = paste0(outdir, "pipeline/TN_interface/Abun_TNI_1/Class/", sam, ".pdf"),
+                p.height = 8, p.width = 8,
+                cha.col = col,
+                scale_y_reverse = y_reverse[sam],
+                scale_x_reverse = x_reverse[sam],
+                title = sam)
+  data <- data[data$boun_class != "others",]
+  if(nrow(data) > 0){
+    stat.test <- data %>%
+      wilcox_test(Abundances ~ boun_class) %>%
+      add_significance("p") %>% add_x_position(x = "boun_class")
+    pdf(paste0(outdir, "pipeline/TN_interface/Abun_TNI_1/boxplot/", sam, ".pdf"), width = 4, height = 3)
+    p <- ggplot(data = data, aes(y = Abundances, x = boun_class)) +
+      geom_boxplot(aes(fill = boun_class))  +
+      theme.set +
+      stat_pvalue_manual(stat.test, y.position = c(max(data$Abundances)+0.1), tip.length = 0.01, size = 7) +
+      scale_fill_manual(values = c("#336699", "#e9724c"))
+    print(p)
+    dev.off()
+  }
+}
+#saveRDS(stf.lt, paste0(outdir, "pipeline/stf.lt.rds"))
+# TNI and region annotation
+for (sam in names(Spatial.list)) {
+  pdf(paste0(outdir, "pipeline/TN_interface/region_anno/", sam, "_boun_annotype_percent.pdf"), width = 4)
+  data <- aggregate(stf.lt[[sam]]@Annotation$region.anno, by = list(stf.lt[[sam]]@Annotation$boun_class,stf.lt[[sam]]@Annotation$region.anno), length)
+  data <- data[data$Group.1!= "others",]
+  colnames(data) <- c("class", "anno", "count")
+  p = ggplot(data = data, aes(y = count, x = class, fill = anno)) +
+    geom_bar(position="fill", stat="identity", width = 0.7) +
+    theme_bw() +
+    theme(text = element_text(size = 18)) +
+    labs(y = "Percentage") +
+    scale_fill_manual(values = c(Normal = "#679436", Transition = "#ced4da", Tumor = "#336699"))
+  print(p)
+  dev.off()
+}
+# image and TNI
+for (sam in names(Spatial.list)) {
+  temp <- subset(stf.lt[[sam]]@Annotation, boun_class != "others")
+  pdf(paste0(outdir, "pipeline/TN_interface/", sam, "/boun_image2.pdf"), height = 7.5, width = 8,)
+  p <- SpatialDimPlot(Spatial.list[[sam]][, rownames(temp)], crop = F,
+                 cells.highlight = list(T_boun = rownames(temp[temp$boun_class == "T_boun", ]), N_boun = rownames(temp[temp$boun_class == "N_boun", ])),
+                 cols.highlight = c(T_boun="#c32f27",N_boun = "#f9c74f"), pt.size.factor = 0.9, alpha = 1, stroke = NA)
+  print(p)
+  dev.off()
+}
+########################### Tue Jul  9 22:59:37 2024 ###########################
+##
+theme.set <- theme(
+  panel.grid.major.y=element_blank(),
+  panel.grid.minor.y=element_blank(),
+  panel.background = element_blank(),
+  axis.text.x = element_text(hjust = 0.5),
+  plot.title=element_text(hjust =0.5, size = 12),
+  axis.line.y=element_line(linetype=1,color='black'),
+  axis.line.x=element_line(linetype=1,color='black'),
+  legend.text=element_text(size=12),
+  legend.title = element_text(size=14),
+  axis.text=element_text(size=14),
+  axis.title.y = element_blank(),
+  axis.title.x = element_blank()
+)
+# boun with cnv
+library(rstatix)
+for (sam in names(Spatial.list)[2:5]){
+  copykat.test <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/HRA000437/copykat/", sam, "/copykat.test.rds"))
+  CNA.test <- data.frame(copykat.test$CNAmat, check.names = F)[, -(1:3)]
+  colnames(CNA.test) <- gsub("\\.", "-", colnames(CNA.test))
+  ES <- colMeans(abs(CNA.test))
+  data <- data.frame(CNV.score = ES,
+                     stf.lt[[sam]]@Annotation[names(ES), c("boun_reg","boun_class")])
+  SpotVisualize(Spatial.list[[sam]][,names(ES)], meta = Norm01(ES),
+                savefile = paste0(outdir, "pipeline/TN_interface/CNV/", sam, "_CNVscore.pdf"),
+                p.height = 8, p.width = 8,
+                title = "CNV score")
+  data <- data[data$boun_class != "others",]
+
+  stat.test <- data %>%
+    wilcox_test(CNV.score ~ boun_class) %>%
+    add_significance("p") %>% add_x_position(x = "boun_class")
+  pdf(paste0(outdir, "pipeline/TN_interface/CNV/", sam, "_CNA_boxplot_boun.pdf"), width = 4, height = 3)
+  print(ggplot(data = data, aes(y = CNV.score, x = boun_class)) +
+    geom_boxplot(aes(fill = boun_class))  +
+    theme.set +
+    stat_pvalue_manual(stat.test, y.position = c(max(data$CNV.score)+0.1*max(data$CNV.score)),
+                       tip.length = 0.01, size = 7) +
+    scale_fill_manual(values = c("#336699", "#e9724c")))
+  dev.off()
+}
+for (sam in names(Spatial.list)){
+  stf <- stf.lt[[sam]]
+  st <- AddMetaData(Spatial.list[[sam]], metadata = stf@Annotation[, "boun_reg"], col.name = "boun_reg")
+  st = SetIdent(st, value="boun_reg")
+  temp = st[,stf@Annotation$boun_class != "others"]
+  pdf(paste0(outdir, "/TN_interface/image_TNI/",sam, "_image_boundary.pdf"))
+  p <- SpatialDimPlot(temp, crop = F,
+                      cells.highlight = list(T_boun = rownames(stf@Annotation)[stf@Annotation$boun_class == "T_boun"],
+                                             N_boun = rownames(stf@Annotation)[stf@Annotation$boun_class == "N_boun"]),
+                      cols.highlight = c(T_boun="#c32f27",N_boun = "#f9c74f"), pt.size.factor = 0.9, alpha = 1, stroke = NA)
+  print(p)
+  dev.off()
+}
+
+############################ Wed Jan 10 11:49:07 2024 ###########################
+### expression of TMSB4X
+stf.lt <- readRDS(paste0(outdir, "pipeline/stf.lt.rds"))
+library(ggpubr)
+library(rstatix)
+for (sam in names(Spatial.list)){
+  savedir <- paste0(outdir, "pipeline/Feature_analysis/TMSB4X/")
+  if (! dir.exists(savedir)) {
+    dir.create(savedir)
+  }
+  pos <- Spatial.list[[sam]]@meta.data[, c("x", "y")]
+  if(xy_reverse[sam]){
+    colnames(pos) <- c("y", "x")
+  }
+  expr <- GetAssayData(object = Spatial.list[[sam]],
+                       assay = "SCT",
+                       slot = "data")
+  for (gene in "TMSB4X") {
+    SpotVisualize(st = Spatial.list[[sam]],
+                  pos = pos,
+                  scale_y_reverse = y_reverse[sam],
+                  scale_x_reverse = x_reverse[sam],
+                  feature = gene,
+                  size = 3,
+                  savefile = paste0(savedir, "/", sam, ".pdf"),
+                  num.high = "#cb0b0a",
+                  legend.name = gene,
+                  legend.key.size = unit(1, "cm"),
+                  legend.text = element_text(size = 20),
+                  legend.title = element_text(size = 28),
+                  plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"),
+                  legend.position = "top",
+                  legend.key.width = unit(1.5, "cm"),
+                  plot.title = element_blank())
+
+  }
+  # boxplot
+  gene.exp <- as.numeric(expr[gene,])
+  type <- stf.lt[[sam]]@Annotation$boun_class
+  data <- data.frame(type, value = gene.exp)
+  col <- LabelMapcolor(labels = unique(type), assgin.col = c("others" = "#ced4da"))
+  # add sig
+  stat.test <- data %>%
+    wilcox_test(value ~ type, p.adjust.method = "BH") %>%
+    add_significance("p.adj") %>% add_x_position(x = "type")
+  plot <- ggplot(data, aes(x = type, y = value)) + geom_boxplot(aes(fill = type)) + theme_bw() +
+    ylim(0, max(data$value) +0.5) +
+    theme(panel.grid.major=element_blank(), text = element_text(size = 18), axis.title = element_text(size = 16)) +
+    scale_fill_manual(values = col) +
+    labs(y = "Expression") +
+    stat_pvalue_manual(stat.test, y.position = c(max(data$value) + 0.3, max(data$value) + 0.5, max(data$value) + 0.1), tip.length = 0.01, size = 5)
+  pdf(paste0(savedir, "/", sam, "_boxplot.pdf"), width = 5, height = 4.5)
+  print(plot)
+  dev.off()
+}
+

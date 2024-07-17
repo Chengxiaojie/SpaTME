@@ -1,0 +1,285 @@
+# Wed Sep  6 12:53:46 2023 
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project:
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/base.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/Se_preprocess.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/ST_features.2.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/LR_interaction.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/TN_interface.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/BayesSpace.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/pheno_program_NMF.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/unit.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/FeatureSelection.R")
+library("rstatix") # cor_test
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+# load data
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+outdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/pipeline/Feature_analysis/"
+stf.lt <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/pipeline/stf.lt.rds")
+########################### Tue Dec 12 13:23:49 2023 ###########################
+## # select structures associated with phenoscore
+asso.anno <- list()
+for ( sam in names(stf.lt)) {
+  print(sam)
+  #asso.anno[[sam]] <- list()
+  anno <- stf.lt[[sam]]@Annotation
+  # TLS anno
+  TLSanno <- anno$TLS_anno
+  if (length(which(TLSanno == "TLS")) >1) {
+    group <- ifelse(TLSanno == "TLS", 1, 0)
+    asso.anno[[sam]][["TLS_region"]] <- PhenoAssoFeatures(data = t(stf.lt[[sam]]@PhenoScore), 
+                                phenotype = group, verbose = F, method = "auc", 
+                                auc.power = 0)
+  } else {
+    asso.anno[[sam]][["TLS_region"]] <- NA
+    }
+  # bayes clusters
+  asso.anno[[sam]][["bayes_clu"]] <- foreach(i = sort(unique(anno$bayes_cluster)), .combine = "rbind") %do% {
+    group <- ifelse(anno$bayes_cluster == i, 1, 0)
+    pval <- PhenoAssoFeatures(data = t(stf.lt[[sam]]@PhenoScore), 
+                                                             phenotype = group, verbose = F, method = "auc", 
+                                                             auc.power = 0)
+    return(cbind(rownames(pval), group = paste0("clu_", i), pval))
+  }
+  # # boun reg
+  asso.anno[[sam]][["boun_reg"]] <- lapply(stf.lt[[sam]]@PhenoScore, function(x){
+    group <- ifelse(anno$boun_reg == "boun", 1, 0)
+    if (length(which(group == 1)) >1) {
+      pval <- PhenoAssoFeatures(data = t(Norm01(stf.lt[[sam]]@PhenoScore)), 
+                                phenotype = group, verbose = F, method = "auc", 
+                                auc.power = 0)
+      return(cbind(rownames(pval), group = paste0("clu_", i), pval)) 
+    }
+  }) %>% unlist()
+  # asso.anno[[sam]] <- cbind(asso.anno[[sam]], boun_reg = pval)
+  # boun type
+  asso.anno[[sam]][["boun_type"]] <- foreach(i = unique(anno$boun_type[anno$boun_type != "others"]), .combine = "rbind") %do% {
+    if(length(i) !=0){
+      group <- anno$boun_type[anno$boun_type %in% c(i, "others")]
+      group <- factor(group, levels = c("others", i))
+      pval <- PhenoAssoFeatures(data = t(stf.lt[[sam]]@PhenoScore[anno$boun_type %in% c(i, "others"),]), 
+                                phenotype = group,  verbose = F, method = "auc", 
+                                auc.power = 0)
+      return(cbind(rownames(pval), group = i, pval)) 
+    }
+  }
+  #
+  asso.anno[[sam]][["cell_abun"]] <-  cor_test(cbind(stf.lt[[sam]]@PhenoScore, stf.lt[[sam]]@CellEnrich),
+                               vars = colnames(stf.lt[[sam]]@PhenoScore),
+                               vars2 = colnames(stf.lt[[sam]]@CellEnrich))
+  asso.anno[[sam]][["TLS_Tboun"]] <- cor_test(cbind(stf.lt[[sam]]@PhenoScore, stf.lt[[sam]]@Annotation[, c("edge_score", "TLSpred")]),
+                                              vars = colnames(stf.lt[[sam]]@PhenoScore),
+                                              vars2 = c("edge_score", "TLSpred"))
+}
+saveRDS(asso.anno, "~/ST_scRNAseq/GSE175540/pipeline/Feature_analysis/Pheno_structures/asso.anno.rds")
+theme.set <- theme(
+  panel.grid.major.y=element_blank(),
+  panel.grid.minor.y=element_blank(),
+  panel.background = element_blank(),
+  axis.text.x = element_text(angle = 45, hjust = 1),
+  plot.title=element_text(hjust =0.5),
+  axis.line.y=element_line(linetype=1,color='grey'),
+  axis.line.x=element_line(linetype=1,color='grey'),
+  #axis.ticks = element_line(linetype=2,color='grey'),
+  #panel.grid=element_line(linetype=2,color='grey'),
+  legend.text=element_text(size=12),
+  axis.text=element_text(size=12),
+  axis.title = element_text(size=14),
+)
+
+# category
+exam_c7 <- asso.anno$GSM5924033_ffpe_c_7
+data <- exam_c7$bayes_clu
+#data <- cbind(data, p.adj = p.adjust(data$p.value, method = "BH"))
+data <- cbind(data, direct = ifelse(data$avg_diff > 0 ,"pos", "neg"))
+#data$direct <- data$value * data$direct
+#data$p.adj <- -log10(data$p.adj)
+#data$p.adj[data$p.adj >=5 ] = 5
+#colnames(data) <- c("factor", "feature", "p.value","avg.diff", "-log10(p.adj)", "direct")
+data <- cbind(data, auc_diff = data$myAUC -0.5)
+colnames(data)[1:2] <- c("factor", "feature")
+data <- subset(data, !features %in% c("pos_Factor_2", "pos_Factor_4"))
+data$feature <- gsub("clu", "domain", data$feature)
+ggplot() + geom_point(data = data, aes(x = factor, y = feature, color = auc_diff, size = power)) +
+  geom_point(data = data[data$power >= 0.5, ], aes(x = factor, y = feature, size = power), shape = 1, colour = "black", stroke = 1, show.legend = T) +
+  #scale_colour_manual(values = c(neg = "#336699", pos = "#87153b")) +
+  scale_color_gradient2(low = "#336699", high = "#87153b") +
+  theme.set
+
+# number of spots of TNI types
+used.type <- c()
+for (sam in names(Spatial.list)) {
+  type <- stf.lt[[sam]]@Annotation$boun_type
+  type <- type[type != "others"]
+  if (length(type) >1){
+    type <- table(type)
+    names(type) <- paste0(sam, ".", names(type))
+    used.type <- c(used.type, type) 
+  }
+}
+names(used.type) <- str_split_fixed(names(used.type), "_", 2)[,2]
+used.type <- used.type[used.type>=25]
+# counts of boun type enriched with factors
+count.used <- lapply(asso.anno, function(x) x[["boun_type"]])
+asso.count <- do.call(rbind, count.used)
+rowname <- str_split_fixed(rownames(asso.count), "\\.", 2)[,1]
+rowname <- str_split_fixed(rowname, "_", 2)[,2]
+asso.count <- cbind(asso.count, sam.type = paste0(rowname, ".",asso.count$group))
+# remove pos factor 2 nad 4: non-significant
+asso.count <- subset(asso.count, !features %in% c("pos_Factor_2", "pos_Factor_4"))
+asso.count <- subset(asso.count, sam.type %in% names(used.type))
+# statistic
+data <- tapply(asso.count$power >=0.5 & asso.count$avg_diff > 0,asso.count$`rownames(pval)`, sum)
+pdf(paste0(outdir, "Pheno_structures/boun_withfactor_statistic.pdf"), width = 6, height = 4)
+ggplot(data = data.frame(factors = names(data), count = data), aes(x = factors, y = count, width = 0.5)) + 
+  geom_bar(stat = 'identity', fill = "#82a0bc")+
+  theme.set
+dev.off()
+# bountype--associated with factor
+asso.count.mt <- spread(asso.count[, c(1,4,7)], key = "sam.type", value = "myAUC") %>%
+  tibble::column_to_rownames("rownames(pval)")
+# cell abun -- phenoscore
+data <- asso.anno$GSM5924033_ffpe_c_7$cell_abun
+data <- cbind(data, abs_cor = abs(data$cor))
+data <- cbind(data, p.sig = p.adjust(data$p, method = "BH") <= 0.001)
+ggplot() + geom_point(data = data, aes(x = var1, y = var2, color = cor, size = abs_cor)) + 
+  scale_colour_gradient2(low = "#336699", high = "#87153b") +
+  geom_point(data = data[data$p.sig, ], aes(x = var1, y = var2, size = abs_cor), shape = 1, colour = "black", stroke = 1, show.legend = T) +
+  theme.set
+# # TLS score -- phenoscore
+# used <- lapply(asso.anno, function(x)x[["TLS_Tboun"]])
+# data <- do.call(rbind, used)
+# data[, "samples"] <- str_split_fixed(rownames(data), "\\.", 2)[,1]
+# data$samples <- str_split_fixed(data$samples, "_", 2)[,2]
+# colnames(data)[1] <- "factors"
+# data <- data[data[, "var2"] == "TLSpred", ]
+# data <- data[!data[, "factors"] %in% c("pos_Factor_2", "pos_Factor_4"),]
+# data <- cbind(data, abs_cor = abs(data$cor))
+# data <- cbind(data, p.sig = p.adjust(data$p, method = "BH") <= 0.001)
+# pdf(paste0(outdir, "TLSscore/TLS_pheno.pdf"), width = 9, height = 5)
+# ggplot() + geom_point(data = data, aes(x = samples, y = factors, color = cor, size = abs_cor)) + 
+#   scale_colour_gradient2(low = "#336699", high = "#87153b") +
+#   geom_point(data = data[data$p.sig, ], aes(x = samples, y = factors, size = abs_cor), shape = 1, colour = "black", stroke = 1, show.legend = T) +
+#   theme.set
+# dev.off()
+# # TLSregions enriched with factors
+data <- lapply(asso.anno, function(x) x[["TLS_region"]])
+data <- do.call(rbind, data[unlist(lapply(data, is.list))])
+rowname <- str_split_fixed(rownames(data), "\\.", 2)[,1]
+rowname <- str_split_fixed(rowname, "_", 2)[,2]
+data <- cbind(data, sample = rowname)
+data[, "power"] <- (data$myAUC -0.5)*2
+data <- subset(data, !features %in% c("pos_Factor_2", "pos_Factor_4"))
+pdf(paste0(outdir, "TLSscore/TLS_factor_enrich.pdf"), width = 8, height = 4.5)
+ggplot() + geom_point(data = data, aes(x = sample, y = features, color = power, size = abs(power))) +
+  scale_colour_gradient2(limits = c(-1, 1),low = "#336699", high = "#87153b") +
+  geom_point(data = data[data$power >= 0.5, ], aes(x = sample, y = features, size = abs(power)), 
+             shape = 1, colour = "black", stroke = 1, show.legend = T) +
+  theme.set
+dev.off()
+########################## TNI/Boundary subtype. ########################
+TNI_group <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/pipeline/Feature_analysis/TNIsubtype/TNI_group.rds")
+col_anno <- data.frame(group = TNI_group, 
+                        TLS_around = type.tls.count[names(TNI_group)] <=2,
+                        samples = str_split_fixed(names(TNI_group), "\\.", 2)[,1])
+anno.factor.asso <- (asso.count.mt - 0.5)*2
+#anno.factor.asso[abs(anno.factor.asso)<0.4] <- 0
+pdf(paste0(outdir, "Pheno_structures/boun_correspond_TLS_factor.pdf"), width = 12, height = 5)
+h <- Heatmap(as.matrix(anno.factor.asso[, names(TNI_group)]), column_split = TNI_group, row_km = 2, name = "power", 
+        row_names_gp = gpar(fontsize = 12), column_names_gp = gpar(fontsize = 9),column_names_rot = 60,
+        col = colorRamp2(c(-1,0, 1), colors = c("#0077b6","white", "#87153b")),
+        top_annotation = HeatmapAnnotation(df = col_anno,
+                                           which = "column",
+                                           col = list(TLS_around = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+                                             samples = LabelMapcolor(col_anno$samples),
+                                             group = c("TLSa/ECMr" = "#70a288","ECMr"= "#b95b13","Based"="#60afff","TLSa"="#87153b"))))
+draw(h)
+dev.off()   
+
+head(sort(colSums(a), decreasing = T))
+
+# explore why TLS is associated with neg_factor5
+# neg_factor5 , TLS and  boun signature in Bulk-seq
+TLS.sig <- CuratedSig.lt$Immune$TLS[1:2]
+boun.sig <- readRDS(paste0(outdir, "TNIsubtype/boun.sig.rds"))
+#boun.sig <- setdiff(boun.sig, TLS.sig$imprint.65sig)
+used.sig <- c(TLS.sig, list(boun.sig = boun.sig))
+#
+nmf.lt <- readRDS(paste0("~/ST_scRNAseq/Files/TCGA/TCGA_NMF/", cancer, "/nmf.lt.rds"))
+H = nmf.lt$neg$nmf$nmf$fit[["7"]]@fit@H
+H <- t(H)
+# cox plot 
+library(survival)
+library(survminer)
+dataset <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/", "TCGA_KIRC.rds"))
+names(dataset)[1:3] <- str_split_fixed(names(dataset)[1:3], "\\.", 3)[, 3]
+Expr_TPM <- dataset[["htseq_log2TPM"]]
+barcode <- substr(colnames(Expr_TPM), 14, 15) %>% as.numeric()
+Expr_TPM <- Expr_TPM[, barcode >= 1 & barcode <10]
+# phenotype
+phenotype <- as.data.frame(dataset$survival.tsv)
+rownames(phenotype) <- phenotype$sample
+phenotype <- phenotype[, c("OS", "OS.time")]
+colnames(phenotype) <- c("status", "time")
+phenotype$time <- phenotype$time/(365.24/12) %>% round(4)
+used.sig.score <- gsva(expr = Expr_TPM, 
+                       gset.idx.list = used.sig,
+                       method = "ssgsea")
+used.sig.score <- t(used.sig.score)
+Heatmap(scale(used.sig.score), show_row_names = F)
+# survival 
+#phenotype <- phenotype[colnames(H),]
+group1 <- ifelse(used.sig.score[, "boun.sig"] > mean(used.sig.score[, "boun.sig"]), "High_Score", "Low_Score")
+group2 <- ifelse(used.sig.score[, "imprint.65sig"] > mean(used.sig.score[, "imprint.65sig"]), "High_Score", "Low_Score")
+group3 <- dataset$GDC_phenotype.tsv.gz$tumor_stage.diagnoses
+names(group3) <-dataset$GDC_phenotype.tsv.gz$submitter_id.samples
+group3 <- group3[group3!="not reported"]
+#group3 <- 
+data <- merge(data.frame(group3, row.names = names(group3)), data.frame(group1, group2, row.names = rownames(used.sig.score)), by = 0)
+rownames(data) <- data$Row.names
+data <- merge(data, phenotype, by = 0)
+data$group3 <- ifelse(data$group3 %in% c("stage i", "stage ii"), "early", "late")
+rownames(data) <- data$Row.names
+data <- merge(H, data[,- c(1:2)], by = 0)
+group4 <- ifelse(data$Factor_5 > mean(data$Factor_5), "High_Score", "Low_Score")
+fit_os <- survfit(Surv(time, status) ~ group3 +group4 + group2, data = data)
+ggsurvplot(fit = fit_os, data = data, pval=TRUE, #size=1.5, 
+           pval.size=7, #legend.labs=c(paste("High (n=",num["High"],")",sep=""),paste("Low (n=",num["Low"],")",sep="")),
+           # xlab="Months",ylab="Probability of overall survival",
+           ggtheme=theme(text = element_text(size=19), legend.text = element_text(size=16),
+                         axis.text = element_text(color="black",size=20),legend.direction = "vertical",
+                         panel.background=element_rect(fill='transparent'),
+                         axis.line=element_line(color="black",size=0.6),plot.margin=unit(rep(1.5,4), 'lines')))
+
+# BRCA contrast
+dataset <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/TCGA_BRCA.rds"))
+names(dataset)[1:3] <- str_split_fixed(names(dataset)[1:3], "\\.", 3)[, 3]
+BRCA_Expr_TPM <- dataset[["htseq_log2TPM"]]
+BRCA.used.sig.score <- gsva(expr = BRCA_Expr_TPM, 
+                       gset.idx.list = used.sig,
+                       method = "ssgsea")
+Heatmap(scale(t(BRCA.used.sig.score)), show_row_names = F)
+save(list = ls(all.names = T),
+     file = paste0(outdir, "/temp.RData"))
+#
+mg.score <- gsva(expr = Expr_TPM, 
+                 gset.idx.list = mg_lt,
+                 method = "ssgsea")
+a = merge(t(rbind(mg.score, used.sig.score[c("imprint.65sig", "LC.50sig"),])),phenotype, by = 0) %>% column_to_rownames("Row.names")
+factor_7_group <- ifelse(a$Factor_7 > mean(a$Factor_7), "High", "low")
+TLS_group <- ifelse(a$imprint.65sig > mean(a$imprint.65sig), "High", "low")
+fit_os <- survfit(Surv(time, status) ~ factor_7_group + TLS_group, data = a)
+ggsurvplot(fit = fit_os, data = a, pval=TRUE, legend = c(0.8,0.9), palette =c("#c32f27", "#336699", ),
+           size=1.5, pval.size=7, #legend.labs=c(paste("High (n=",num["High"],")",sep=""),paste("Low (n=",num["Low"],")",sep="")),
+           # xlab="Months",ylab="Probability of overall survival",
+           ggtheme=theme(text = element_text(size=19), legend.text = element_text(size=16), 
+                         axis.text = element_text(color="black",size=20),legend.direction = "vertical",
+                         panel.background=element_rect(fill='transparent'), 
+                         axis.line=element_line(color="black",size=0.6),plot.margin=unit(rep(1.5,4), 'lines')))
+coxph(Surv(time, status)~imprint.65sig + strata(a$Factor_7>mean(a$Factor_7)),a)
+# coef exp(coef) se(coef)     z     p
+# imprint.65sig 0.3727    1.4516   0.7019 0.531 0.595

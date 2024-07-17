@@ -1,0 +1,556 @@
+# Tue Dec 12 13:44:14 2023
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project: TNI subtypes
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/base.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/Se_preprocess.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/ST_features.2.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/LR_interaction.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/TN_interface.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/BayesSpace.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/pheno_program_NMF.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/unit.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/FeatureSelection.R")
+library("rstatix") # cor_test
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+# load data
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/Temp_RDS/Spatial.list.RDS")
+outdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/pipeline/Feature_analysis/"
+stf.lt <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE175540/pipeline/stf.lt.rds")
+# Feature selection for boun_reg
+# # boun_reg with spots more than 25
+used.type <- c()
+for (sam in names(Spatial.list)) {
+  type <- stf.lt[[sam]]@Annotation$boun_type
+  type <- type[type != "others"]
+  if (length(type) >1){
+    type <- table(type)
+    names(type) <- paste0(sam, ".", names(type))
+    used.type <- c(used.type, type)
+  }
+}
+names(used.type) <- str_split_fixed(names(used.type), "_", 2)[,2]
+saveRDS(used.type, paste0(outdir, "TNIsubtype/used.TNItypes.rds"))
+boun.diffgene.lt <- list()
+for (sam in names(stf.lt)){
+  print(sam)
+  stf <- stf.lt[[sam]]
+  expr <- GetAssayData(object = Spatial.list[[sam]],
+                       assay = "SCT",
+                       slot = "data")
+  expr <- as.data.frame(expr)
+  types <- stf@Annotation$boun_type
+  names(types) <- rownames(stf@Annotation)
+  types <- types[colnames(expr)]
+  types[types != "others"] <- paste0(substr(sam, 12, nchar(sam)),".", types[types != "others"])
+  ts <- unique(types)
+  ts <- ts[ts != "others"]
+  ts <- ts[used.type[ts] >=25]
+  # filter first
+  if (length(ts) >= 1) {
+    boun.diffgene.lt[[sam]] <- foreach(i = ts, .combine = "rbind") %do% {
+      group <- types[types %in% c(i, "others")]
+      group <- factor(group, levels = c("others", i))
+      g.pt <- rowSums(expr[, types == i] > 0 )/length(which(types == i)) >= 0.5
+      data <- expr[g.pt, types %in% c(i, "others")]
+      auc <- PhenoAssoFeatures(data = data,
+                               phenotype = group,
+                               n_workers = 5,
+                               verbose = T, method = "auc",
+                               auc.power = 0)
+      return(cbind(auc, group = i))
+    }
+  }
+}
+# saveRDS(boun.diffgene.lt, paste0(outdir, "TNIsubtype/boun.diffgene.lt.rds"))
+boun.diffgene.lt <- readRDS(paste0(outdir, "TNIsubtype/boun.diffgene.lt.rds"))
+names(boun.diffgene.lt) <- str_split_fixed(names(boun.diffgene.lt), "_", 2)[, 2]
+#boun.diffgene.lt <- unlist(boun.diffgene.lt, recursive = F)
+data <- Reduce(rbind, boun.diffgene.lt)
+data <- split(data, data$group)
+data <- sapply(data,USE.NAMES = T, function(lt) {
+  power <- (lt$myAUC- 0.5)*2
+  names(power) <- lt$features
+  return(power)
+})
+comb.diffgene <- Reduce(function(x, y) {
+  merge(x, y, all=TRUE, by = 0) %>% tibble::column_to_rownames("Row.names")}, data)
+colnames(comb.diffgene) <- names(data)
+comb.diffgene[is.na(comb.diffgene)] <- 0
+top.diffgene <- rowSums(comb.diffgene > 0.5) %>%
+  sort(decreasing = T)
+saveRDS(comb.diffgene, paste0(outdir, "TNIsubtype/comb.diffgene.rds"))
+
+used.diff.gene <-  comb.diffgene[names(top.diffgene)[top.diffgene >=8],]
+#used.diff.gene[abs(used.diff.gene)<0.2] <- 0
+used.diff.gene <- used.diff.gene[, colSums(used.diff.gene>=0.5) >= 1]
+saveRDS(used.diff.gene, paste0(outdir, "TNIsubtype/used.diff.gene.rds"))
+set.seed(100)
+H1 <- Heatmap(as.matrix(used.diff.gene), show_row_names = T, column_km = 4, row_km = 3)
+# order
+col_order <- column_order(draw(H1))
+col_group <- rep("TLSa/ECMr", ncol(used.diff.gene))
+col_group[col_order[[2]]] <- "ECMr"
+col_group[col_order[[3]]] <- "Based"
+col_group[col_order[[4]]] <- "TLSa"
+names(col_group) <- colnames(used.diff.gene)
+names(col_order) <- c("TLSa/ECMr", "ECMr", "Based", "TLSa")
+saveRDS(col_group, paste0(outdir, "TNIsubtype/TNI_group.rds"))
+# heatmap add group and annotation
+# TLS distance
+type.tls.count <- list()
+for (sam in names(stf.lt)) {
+  type <- stf.lt[[sam]]@Annotation$boun_type
+  TLSanno <- stf.lt[[sam]]@Annotation$TLS_anno
+  d <- as.matrix(dist(stf.lt[[sam]]@Position))
+  d <- d[type != "others", TLSanno == "TLS"]
+  type <- type[type != "others"]
+  if (ncol(d) >=1 &nrow(d)>=1){
+    type.tls.count[[sam]] <- sapply(unique(type), function(x){
+      min(d[type == x,])
+    })
+  }
+  # type.tls.count[[sam]] <- lapply(tls.count, function(x){
+  #   sum(x == "TLS")/length(x)
+  # })
+}
+type.tls.count <- unlist(type.tls.count)
+names(type.tls.count) <- str_split_fixed(names(type.tls.count), "_", 2)[,2]
+
+anno_fortype <- data.frame(group = col_group,
+                           TLS_around = type.tls.count[colnames(used.diff.gene)] <=2,
+                           samples = str_split_fixed(colnames(used.diff.gene), "\\.", 2)[,1])
+pdf(paste0(outdir, "TNIsubtype/TNI_group_annotation.pdf"), width = 12, height = 6)
+set.seed(100)
+H <- Heatmap(as.matrix(used.diff.gene), show_row_names = T, column_km = 4, row_km = 3,
+             column_names_gp = gpar(fontsize = 10), row_names_gp = gpar(fontsize = 8),name = "power",column_names_rot = 60,
+             col = colorRamp2(c(-1,0, 1), colors = c("#0077b6","white", "#87153b")),
+             top_annotation = HeatmapAnnotation(df = anno_fortype, which = "column",
+                                                col = list(TLS_around = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+                                                           samples = LabelMapcolor(anno_fortype$samples),
+                                                           group = c("TLSa/ECMr" = "#70a288","ECMr"= "#b95b13","Based"="#60afff","TLSa"="#87153b"))))
+draw(H)
+dev.off()
+saveRDS(H, paste0(outdir, "TNIsubtype/boun.H.rds"))
+# a = c(H@row_names_param$labels[unlist(row_order(H))])
+# b = c(rep("Gene pattern 1", 12), rep("Gene pattern 3", 7), rep("Gene pattern 2", 12))
+# names(b) = a
+saveRDS(b, paste0(outdir, "TNIsubtype/pattern.genes.rds"))
+FactorEnrichAnalysis(mg_vt = b,
+                     ont = "BP",
+                     OrgDb='org.Hs.eg.db',
+                     savefile = paste0(outdir, "TNIsubtype/gene_pattern.GO.BP.pdf"),
+                     p.width = 8, p.height = 6
+                     )
+FactorEnrichAnalysis(mg_vt = b,
+                     ont = "CC",
+                     OrgDb='org.Hs.eg.db',
+                     savefile = paste0(outdir, "TNIsubtype/gene_pattern.GO.CC.pdf"),
+                     p.width = 7, p.height = 6
+)
+# fisher.test for neighbor-TLS
+counts <- type.tls.count[colnames(used.diff.gene)]<=2
+f.test <- c()
+for (i in c("group.A", "group.D")) {
+  group <- cbind(table(counts[col_group == i]), table(counts[col_group %in% c("group.B", "group.C")]))
+  f.test[i] <- fisher.test(group, alternative = "less")$p.value
+}
+# > f.test
+# group.A      group.D
+# 0.0204290465 0.0007481079
+# heatmap of other TNI types
+data <- comb.diffgene[rownames(used.diff.gene), setdiff(colnames(comb.diffgene), colnames(used.diff.gene))]
+df <- data.frame(samples = str_split_fixed(colnames(data), "\\.", 2)[,1],
+                 TLS_around = type.tls.count[colnames(data)] <=2)
+pdf(paste0(outdir, "TNIsubtype/TNI_others_withTLS.pdf"), width = 9, height = 5.5)
+h1 <- Heatmap(data,column_names_gp = gpar(fontsize = 10), row_names_gp = gpar(fontsize = 8),name = "power",column_names_rot = 60,
+              col = colorRamp2(c(-1,0, 1), colors = c("#0077b6","white", "#87153b")),
+              top_annotation = HeatmapAnnotation(df = df, which = "column",
+                                                 col = list(TLS_around = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+                                                            samples = LabelMapcolor(df$samples))))
+draw(h1, padding = unit(c(4, 10, 4, 4), "mm"))
+dev.off()
+# gene patterns
+# order
+row_order <- row_order(draw(H1))
+gene_pattern <- lapply(row_order, function(x)rownames(used.diff.gene)[x])
+gene_pattern_GO <- lapply(gene_pattern, function(x){
+  gid <- bitr(x, 'SYMBOL', 'ENTREZID', OrgDb= 'org.Hs.eg.db')
+  res <- enrichGO(gid$ENTREZID, OrgDb = 'org.Hs.eg.db', ont = "all")
+  res <- as.data.frame(res)
+})
+save(list = c())
+# venn between TLS.sig and pattern 2 genes
+library(VennDiagram)
+length(intersect(gene_pattern[["2"]], CuratedSig.lt$Immune$TLS$imprint.65sig))
+venn.diagram(list(pattern_2 = gene_pattern[["2"]], imprint.65sig = CuratedSig.lt$Immune$TLS$imprint.65sig),
+             fill = c("#336699", "#679436"),
+             filename = paste0(outdir, "TNIsubtype/venn_TLSsig_pattern2.tiff"))
+# boundary signature
+boun.sig <- rownames(used.diff.gene)
+saveRDS(boun.sig, paste0(outdir, "TNIsubtype/boun.sig.rds"))
+sig.score <- gsva(expr = Expr_TPM,
+                  list(boun.sig.score = boun.sig, TLS.sig.score = CuratedSig.lt$Immune$TLS$imprint.65sig),
+                  method = "ssgsea")
+sig.score <- gsva(expr = Expr_TPM,
+                  CuratedSig.lt$Immune$TLS,
+                  method = "ssgsea")
+sig.group <- apply(sig.score, 1, function(x){
+  ifelse(x > mean(x), "high", "low")
+})
+# cox plot
+library(survival)
+library(survminer)
+#
+dataset <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/TCGA_KIRC.rds"))
+names(dataset)[1:3] <- str_split_fixed(names(dataset)[1:3], "\\.", 3)[, 3]
+Expr_TPM <- dataset[["htseq_log2TPM"]]
+# phenotype
+phenotype <- as.data.frame(dataset$survival.tsv)
+rownames(phenotype) <- phenotype$sample
+phenotype <- phenotype[, c("OS", "OS.time")]
+colnames(phenotype) <- c("status", "time")
+phenotype$time <- phenotype$time/(365.24/12) %>% round(4)
+data <- merge(phenotype, data.frame(sig.group), by = 0)
+#fit_os <- survfit(Surv(time, status) ~ boun.sig.score, data = data)
+fit_os <- survfit(Surv(time, status) ~ imprint.65sig, data = data) # LC.50sig
+#fit_os <- survfit(Surv(time, status) ~ TLS.sig.score + boun.sig.score, data = data)
+#pdf(paste0(outdir, "/Feature_analysis/boun.sig.surv.pdf"))
+pdf(paste0(outdir, "imprint.65sig.surv.pdf"), width = 5.5, height = 5)
+ggsurvplot(fit = fit_os, data = data, pval=TRUE, legend = c(0.8,0.9), palette =c("#c32f27", "#336699"),
+           size=1.5, pval.size=7, legend.labs=c("High_score","Low_score"),
+            xlab="Months",ylab="Probability of overall survival",
+           ggtheme=theme(text = element_text(size=22), legend.text = element_text(size=18),
+                         axis.text = element_text(color="black",size=20),legend.direction = "vertical",
+                         panel.background=element_rect(fill='transparent'),
+                         axis.line=element_line(color="black",size=0.6),plot.margin=unit(rep(1.5,4), 'lines')))
+dev.off()
+# sig genes
+data <- merge(phenotype, t(Expr_TPM)[,intersect(boun.sig, rownames(Expr_TPM))], by = 0)
+boun.sig.cox <- foreach(gene = intersect(boun.sig, rownames(Expr_TPM)), .combine = "rbind") %do% {
+  cox = coxph(Surv(time, status) ~ get(gene), data = data)
+  coef = summary(cox)$coefficients[c(1,5)]
+}
+rownames(boun.sig.cox) <- intersect(boun.sig, rownames(Expr_TPM))
+
+# # boun fea
+boun_fea.lt <- list()
+for ( sam in names(stf.lt)){
+  print(sam)
+  stf <- stf.lt[[sam]]
+  used.fea <- Reduce(cbind, c(stf@GsetSig$CuratedSig$Immune[c("Immunoresponse", "TLS")], stf@GsetSig$CuratedSig$Cancer[c("CancerMPs", "Fges")]))
+  colnames(used.fea)[colnames(used.fea) == "TAM"] <- "Fges.TAM"
+  colnames(used.fea)[colnames(used.fea) == "Treg"] <- "Fges.Treg"
+  used.fea <- cbind(used.fea, stf@Others$imminf)
+  used.fea <- cbind(used.fea, bind_cols(stf@CellEnrich))
+  hallmark <- stf@GsetSig$MSigDB$HALLMARK
+  colnames(hallmark) <- str_split_fixed(colnames(hallmark), "_", 2)[,2] %>% tolower()
+  used.fea <- cbind(used.fea, hallmark)
+  types <- stf@Annotation$boun_type
+  names(types) <- rownames(stf@Annotation)
+  ts <- unique(types[types != "others"])
+  if (length(ts) >= 1) {
+    boun_fea.lt[[sam]] <- foreach(i = ts, .combine = "rbind") %do% {
+      group <- types[types %in% c(i, "others")]
+      group <- factor(group, levels = c("others", i))
+      data <- t(used.fea[types %in% c(i, "others"),])
+      auc <- PhenoAssoFeatures(data = data,
+                               phenotype = group,
+                               verbose = T, method = "auc",
+                               auc.power = 0)
+      return(cbind(group = i, auc))
+    }
+  }
+}
+boun.fea.all <- sapply(names(boun_fea.lt), USE.NAMES = T,function(x){
+  res <- spread(boun_fea.lt[[x]][, c("group", "features", "myAUC")], key = "group", value = "myAUC") %>%
+    tibble::column_to_rownames("features") %>% t()
+  rownames(res) <- paste0(x, ".", rownames(res))
+  return(res)
+})
+boun.fea.all <- do.call(rbind, boun.fea.all)
+rownames(boun.fea.all) <- str_split_fixed(rownames(boun.fea.all), "_", 2)[, 2]
+saveRDS(list(boun_fea.lt = boun_fea.lt, boun.fea.all =boun.fea.all),
+        paste0(outdir, "TNIsubtype/boun_STfeatures.rds"))
+#
+data <- boun.fea.all
+data <- (data -0.5)*2
+# boun fea in TNItypes
+data <- t(data)
+data <- data[, names(col_group)]
+data <- data[rowSums(data>0.5) >=6,]
+pdf(paste0(outdir, "TNIsubtype/TNI_group_STfeatures_cut6.pdf"), width = 12, height = 10)
+set.seed(111)
+Heatmap(as.matrix(data[, names(col_group)]), column_split = col_group, row_km = 3, name = "power",
+        row_names_gp = gpar(fontsize = 10), column_names_gp = gpar(fontsize = 8),column_names_rot = 60,
+        col = colorRamp2(c(-1,0, 1), colors = c("#0077b6","white", "#87153b")),
+        top_annotation = HeatmapAnnotation(df = anno_fortype, which = "column",
+                                           col = list(TLS_around = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+                                                      samples = LabelMapcolor(anno_fortype$samples),
+                                                      group = c("TLSa/ECMr" = "#70a288","ECMr"= "#b95b13","Based"="#60afff","TLSa"="#87153b"))))
+dev.off()
+## boundary and TLS position
+sam.size <- rep(2.5,24)
+names(sam.size) <- names(Spatial.list)
+sam.size[c("GSM5924043_frozen_a_3","GSM5924050_frozen_c_2", "GSM5924049_frozen_b_18")] <- 3.5
+sam.size[c("GSM5924050_frozen_c_2")] <- 3
+sam.size["GSM5924038_ffpe_c_36"] = 2.5
+for(sam in names(Spatial.list)){
+  st <- Spatial.list[[sam]]
+  if("TLSanno" %in% colnames(st@meta.data)){
+    if(any(st$TLSanno %in% c("TLS"))){
+      class <- stf.lt[[sam]]@Annotation$boun_type
+      # TLS spots
+      TLS <- stf.lt[[sam]]@Annotation$TLS_anno
+      class[TLS == "TLS"] <- "TLS"
+      SpotVisualize(st = Spatial.list[[sam]], meta = class, size = sam.size[sam],
+                    cha.col = c(LabelMapcolor(labels = unique(class),
+                                              assgin.col = c(others = "#ced4da", TLS = "#c9a227"))),
+                    savefile = paste0(outdir, "TNIsubtype/TNI_TLS_pos/", sam, ".pdf"))
+    }
+  }
+}
+# expression plot of top diff_gene
+for (sam in names(Spatial.list)){
+  savedir <- paste0(outdir, "TNIsubtype/Top_diffgene/", sam)
+  if (! dir.exists(savedir)) {
+    dir.create(savedir)
+  }
+  for (gene in names(top.diffgene)[1:20]) {
+    SpotVisualize(st = Spatial.list[[sam]], feature = gene,
+                  size = sam.size[sam]+1,
+                  num.high = "#cb0b0a",
+                  legend.name = gene,
+                  legend.key.size = unit(0.8, "cm"),
+                  legend.text = element_text(size = 25),
+                  legend.title = element_text(size = 30),
+                  plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"),
+                  savefile = paste0(savedir, "/", gene, ".pdf"),
+                  legend.key.width = unit(1, "cm"),
+                  plot.title = element_blank())
+
+  }
+}
+# diff_gene correlation in TCGA data
+dataset <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/TCGA_KIRC.rds"))
+names(dataset)[1:3] <- str_split_fixed(names(dataset)[1:3], "\\.", 3)[, 3]
+Expr_TPM <- dataset[["htseq_log2TPM"]]
+a <- Expr_TPM[rownames(used.diff.gene),]
+corr.mt <- cor(t(a[rowSums(a) > 0,]))
+set.seed(100)
+row_order <- row_order(draw(H))
+row_order <- rownames(used.diff.gene)[unlist(row_order)]
+data <- reshape2::melt(corr.mt)
+colnames(data) <- c("gene1", "gene2", "corr")
+data$gene1 <- factor(data$gene1, levels = row_order)
+data$gene2 <- factor(data$gene2, levels = row_order)
+data <- data[data$gene1 != data$gene2,]
+data[ ,"size"] <- ifelse(round(data$corr, 2) >= 0.5, 1, 0.5)
+pdf(paste0(outdir, "TNIsubtype/diffgene_inTCGA.pdf"), height = 7, width = 8.5)
+ggplot() + geom_point(data = data, aes(x = gene1, y = gene2, color = corr, size = abs(corr))) +
+  scale_color_gradientn(colours = c("#386fa4", "#ccdbdc","#fcf4d7", "#c32f27"), limits = c(-1, 1)) +
+  theme.set +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+dev.off()
+theme.set <- theme(
+  panel.grid.major.y=element_blank(),
+  panel.grid.minor.y=element_blank(),
+  panel.background = element_blank(),
+  axis.text.x = element_text(angle = 90, hjust = 1),
+  plot.title=element_text(hjust =0.5),
+  axis.line.y=element_line(linetype=1,color='grey'),
+  axis.line.x=element_line(linetype=1,color='grey'),
+  #axis.ticks = element_line(linetype=2,color='grey'),
+  #panel.grid=element_line(linetype=2,color='grey'),
+  legend.text=element_text(size=10),
+  axis.text=element_text(size=10),
+  axis.title = element_text(size=10),
+)
+## DEG in TNI type and non-boun
+#TNI.sams <- str_split_fixed(colnames(used.diff.gene), "\\.", 2)[,1] %>% unique()
+gene <- "TMSB4X"
+DE_res <- c()
+for (sam in names(Spatial.list)) {
+  type <- stf.lt[[sam]]@Annotation$boun_class
+  if (! all(type == "others")) {
+    expr <- GetAssayData(object = Spatial.list[[sam]],
+                         assay = "SCT",
+                         slot = "data")
+    gene.exp <- scale(as.numeric(expr[gene,]))[, 1]
+    mean.exp <- tapply(gene.exp, type, mean)
+    DE_res <- rbind(mean.exp,DE_res)
+    rownames(DE_res)[1] <- sam
+  }
+}
+rownames(DE_res) <- str_split_fixed(rownames(DE_res), "_", 2)[,2]
+pdf(paste0(outdir, "TNIsubtype/TMSB4X_bounclass.pdf"), height = 5.5, width = 3)
+Heatmap(DE_res, name = "Mean",
+        column_names_rot = 60, row_names_gp = gpar(fontsize = 10),
+        col = colorRamp2(c(-2,0, 2), colors = c("#33658a","#e9ecef", "#cb0b0a")))
+dev.off()
+# distribution of CAF in samples
+for (sam in names(Spatial.list)) {
+  cell <- stf.lt[[sam]]@CellEnrich$Fibroblast
+  type <- stf.lt[[sam]]@Annotation$boun_type
+  if (! all(type == "others")) {
+    type[type == "others"] <- "N_boun"
+    data <- data.frame(type, abundance = cell)
+    col <- LabelMapcolor(labels = unique(type),
+                         assgin.col = c(N_boun = "#ced4da"))
+    plot <- ggplot(data, aes(x = type, y = abundance, fill = type)) + geom_boxplot() + theme_bw() +
+      theme(panel.grid.major=element_blank(), text = element_text(size = 18), axis.title = element_text(size = 16)) +
+      scale_fill_manual(values = col)
+    print(plot)
+  }
+}
+# TMSB4X : coxph analysis using FPKM
+# cox plot
+library(survival)
+library(survminer)
+#
+# convert ID to symbol
+datasets <- readRDS("~/ST_scRNAseq/Files/TCGA/TCGAxenaGDC/GDC_htseq_fpkm.rds")
+cancertypes <- str_split_fixed(names(datasets), "\\.", 3)[, 2] %>% unique()
+genetype <- read.table("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Files/Homo_sapiens.GRCh38.109.gene.txt")
+genetype <- genetype[ ,c(2,4,6)]
+colnames(genetype) <- c("ID", "symbol", "type")
+types <- unique(genetype$type)
+remove.types <- types[grep("pseudogene",types)]
+keep.genes <- genetype[grep("protein_coding|IG_.*_gene|TR_.*_gene", genetype$type),]
+#
+cox.coef <- list()
+survplot <- list()
+for (cancer in cancertypes) {
+  data <- datasets[grep(cancer, names(datasets))]
+  expr <- data[grep("fpkm", names(data))] %>%
+    as.data.frame(check.names = F)
+  colnames(expr) <- str_split_fixed(colnames(expr), "gz.", 2)[, 2]
+  expr <- expr %>% tibble::column_to_rownames("Ensembl_ID")
+  rownames(expr) <- str_split_fixed(rownames(expr), "\\.", 2)[,1]
+  expr <- expr[rownames(expr) %in% keep.genes$ID,]
+  gene = keep.genes$symbol[match(rownames(expr), keep.genes$ID)]
+  expr <- expr[!duplicated(gene),]
+  rownames(expr) <- gene[!duplicated(gene)]
+  #
+  phenotype <- as.data.frame(data[[grep("survival",names(data))]])
+  rownames(phenotype) <- phenotype$sample
+  phenotype <- phenotype[, c("OS", "OS.time")]
+  colnames(phenotype) <- c("status", "time")
+  phenotype$time <- phenotype$time/(365.24/12) %>% round(4)
+  samples = intersect(colnames(expr), rownames(phenotype))
+  data <- cbind(phenotype[samples,], t(expr[, samples]))
+  cox.coef[[cancer]] <- coxph(Surv(data$time, data$status) ~ data[, "TMSB4X"])
+  #group <- ifelse(data[, "TMSB4X"] > median(data[, "TMSB4X"]), "High_Score", "Low_Score")
+  group <- ifelse(data[, "TMSB4X"] > quantile(data[, "TMSB4X"])[4], "High_Score",
+                  ifelse(data[, "TMSB4X"] < quantile(data[, "TMSB4X"])[2], "Low_Score", "middle"))
+  data <- data[group!="middle",]
+  group <- group[group!="middle"]
+  survplot[[cancer]] <- survfit(Surv(time, status) ~ group, data = data)
+  plot <- ggsurvplot(fit = survplot[[cancer]], data = data,pval=TRUE, legend = c(0.8,0.9), palette =c("#c32f27", "#336699"),
+                     size=1.5, pval.size=6, #legend.labs=c(paste("High (n=",num["High"],")",sep=""),paste("Low (n=",num["Low"],")",sep="")),
+                     xlab="Months",ylab="Probability of overall survival",
+                     ggtheme=theme(text = element_text(size=19), legend.text = element_text(size=16),
+                                   axis.text = element_text(color="black",size=20),legend.direction = "vertical",
+                                   panel.background=element_rect(fill='transparent'),
+                                   axis.line=element_line(color="black",size=0.6),plot.margin=unit(rep(1.5,4), 'lines')))
+  pdf(paste0(outdir, "TNIsubtype/TMSB4X/",cancer, "_survplot.pdf"), width = 6, height = 5)
+  print(plot)
+  dev.off()
+}
+# expression in single cell
+sc.ref <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/ccRCC202212/Temp_RDS/sc.ref.rds")
+sc.ref <- NormalizeData(sc.ref)
+group = sc.ref@meta.data$minor_type
+a = tapply(sc.ref@assays$RNA@data["TMSB4X",], sc.ref@meta.data$minor_type, mean)
+group <- factor(group, levels = names(a)[order(a, decreasing = F)])
+pdf(paste0(outdir, "TNIsubtype/TMSB4X/boxplot_express_in_scref.pdf"), width = 10, height = 6)
+ggplot(data = data.frame(cell_type = group, Expression = sc.ref@assays$RNA@data["TMSB4X",]),
+       aes(x = cell_type, y = Expression, fill = cell_type)) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), text = element_text(size = 11), axis.text.x = element_text(angle = 45, hjust = 1, size = 13),
+        axis.title = element_text(size = 18), plot.margin = unit(c(1,1,1,1), "cm")) +
+  scale_fill_manual(values = LabelMapcolor(sc.ref@meta.data$minor_type))
+dev.off()
+cor(stf.lt[[sam]]@CellEnrich, Spatial.list[[sam]]@assays$Spatial@data["TMSB4X",])
+# #data[abs(data) <0.3] = 0
+# data <- data[, colSums(data >= 0.5) >=5]
+# data <- data[rowSums(abs(data) >= 0.5) >=5,]
+# #data[abs(data)<0.4] <- 0
+# # annotation
+# anno.factor.asso <- (asso.count.mt - 0.5)*2
+# # anno.factor.asso[anno.factor.asso > 0.5] = 1
+# # anno.factor.asso[anno.factor.asso < 1] = 0
+# anno_fortype <- data.frame(TLS_dis = type.tls.count[rownames(data)] <=2,
+#                            samples = str_split_fixed(rownames(data), "\\.", 2)[,1])
+#
+# pdf(paste0(outdir, "/Figures/boun_allTMEfea_auc_3clu.pdf"), width = 15, height = 18)
+# set.seed(100)
+# Heatmap(t(data),  name = "feaure_power",
+#         column_names_centered = T, row_names_gp = gpar(fontsize = 9),  column_km = 3, row_km = 3,
+#         col = colorRamp2(c(min(data),0, max(data)), colors = c("#0077b6","white", "#87153b")))
+# H1 <- draw(Heatmap(t(data),  name = "feaure_power",
+#               column_names_centered = T, row_names_gp = gpar(fontsize = 9), row_km = 3, column_km = 3,
+#               col = colorRamp2(c(min(data),0, max(data)), colors = c("#0077b6","white", "#87153b")),
+#               top_annotation = HeatmapAnnotation(df = anno_fortype, which = "column",
+#                                                     col = list(#TLS_dis = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+#                                                       samples = LabelMapcolor(unique(anno_fortype$samples))))) %v%
+#   Heatmap(anno.factor.asso[, rownames(data)],  show_column_names = T,row_names_gp = gpar(fontsize = 9), column_names_gp = gpar(fontsize = 8),
+#           clustering_method_columns = "complete", name = "factor_power",
+#           col = colorRamp2(c(min(data),0, max(data)), colors = c("#61a1d7","white", "#dd7f5a")))
+# )
+# dev.off()
+# col_order <- column_order(H1)
+# col_group <- rep("A", nrow(data))
+# col_group[col_order[[2]]] <- "B"
+# col_group[col_order[[3]]] <- "C"
+# names(col_order) <- c("A", "B", "C")
+# # add group annotation
+# anno_fortype <- data.frame(#TLS_dis = type.tls.count[rownames(data)] <=2,
+#                            group = col_group,
+#                            samples = str_split_fixed(rownames(data), "\\.", 2)[,1])
+#
+# pdf(paste0(outdir, "/Figures/boun_allTMEfea_auc_3clu.pdf"), width = 15, height = 17)
+# set.seed(100)
+# H1 <- draw(Heatmap(t(data),  name = "feaure_power",
+#                    column_names_centered = T, row_names_gp = gpar(fontsize = 9), row_km = 3, column_split = factor(col_group, levels = c("A", "B", "C")),
+#                    col = colorRamp2(c(min(data),0, max(data)), colors = c("#0077b6","white", "#87153b")),
+#                    top_annotation = HeatmapAnnotation(df = anno_fortype, which = "column",
+#                                                       col = list(#TLS_dis = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+#                                                         group = LabelMapcolor(unique(anno_fortype$group)),
+#                                                                  samples = LabelMapcolor(unique(anno_fortype$samples)))))
+# )
+# dev.off()
+# # corresponding diffgenes
+# used.diff.gene <-  aggregate(t(abs(comb.diffgene[, rownames(data)])>=0.5), by = list(col_group), sum) %>%
+#   tibble::column_to_rownames("Group.1")
+# used.diff.gene <- colnames(used.diff.gene)[apply(used.diff.gene, 2, max) >=8]
+# #pdf(paste0(outdir, "/Figures/boun_correspond_diffgene_auc_3clu.pdf"), width = 15, height = 12)
+# pdf(paste0(outdir, "/Figures/boun_correspond_diffgene_auc_3clu_shorter.pdf"), width = 15, height = 8)
+# da <- comb.diffgene[used.diff.gene, rownames(data)]
+# set.seed(100)
+# Heatmap(da, column_split = factor(col_group, levels = c("A", "B", "C")), row_km = 3, name = "gene_power", #column_order = unlist(col_order),
+#               row_names_gp = gpar(fontsize = 8), column_names_gp = gpar(fontsize = 8),
+#               col = colorRamp2(c(min(da),0, max(da)), colors = c("#0077b6","white", "#87153b")),
+#         top_annotation = HeatmapAnnotation(df = data.frame(group = anno_fortype$group), which = "column",
+#                                            col = list(#TLS_dis = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+#                                              group = LabelMapcolor(unique(anno_fortype$group)))))
+# dev.off()
+# bountype_in_group <- split(rownames(data), col_group)
+# row_group <- row_order(h2)[["score"]]
+# row_group <- lapply(row_group, function(x)colnames(data)[x])
+# # for fatcor
+# pdf(paste0(outdir, "/Figures/boun_correspond_TLS_factor.pdf"), width = 12, height = 5)
+# set.seed(1)
+# Heatmap(anno.factor.asso[, rownames(data)], column_split = col_group, row_km = 3, name = "factor_power", column_order = unlist(col_order),
+#         row_names_gp = gpar(fontsize = 14), column_names_gp = gpar(fontsize = 8),
+#         col = colorRamp2(c(-1,0, 1), colors = c("#0077b6","white", "#87153b")),
+#         top_annotation = HeatmapAnnotation(df = data.frame(group = anno_fortype$group, TLS_dis = type.tls.count[rownames(data)] <=2),
+#                                            which = "column",
+#                                            col = list(TLS_dis = c("TRUE" = "#ffe808", "FALSE" = "grey"),
+#                                                       group = LabelMapcolor(unique(anno_fortype$group)))))
+# dev.off()
+# boxplot

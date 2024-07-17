@@ -6,7 +6,7 @@ output: html_document
 ---
 ## Preprocessing
 
-```{r, include=F, warning=FALSE, message=FALSE}
+```{r, warning=FALSE, message=FALSE}
 library(SpaTME)
 library(dplyr)
 library(ggplot2)
@@ -75,13 +75,13 @@ net_MEs <- net_MEs$eigengenes
 ```
 
 Visualizing the distribution of each ME.
-```{r, warning=FALSE, message=FALSE, fig.width= 15, fig.height= 10}
+```{r, warning=FALSE, message=FALSE, fig.width= 10, fig.height= 15}
 library(cowplot)
 plot.list = c()
 for(i in colnames(net_MEs)){
   plot.list[[i]] <- SpotVisualize(st, meta = net_MEs[, i], size = 1.5, return = T,title = i, legend.name = "Expression")
 }
-plot_grid(plotlist = plot.list, ncol = 4)
+plot_grid(plotlist = plot.list, ncol = 3)
 ```
 
 SpaTME enables quantification of 1396 LR interactions collected from the `CellPhoneDB` database, which includes multi-subunit information of protein complexes. The `BuildLRExprssion()` function recalculates the effect expression  of secreted proteins and membrane proteins separately, taking into account the interaction distance. 
@@ -108,7 +108,7 @@ LRscore <- CalLRIScore(interaction_input = interaction_input[1:100,],
 ### Cellular features
 
 SpaTME describes the spatial distribution of cell populations by calculating co-distribution scores of cell types and measuring the degree of immune infiltration.
-```{r, include=FALSE}
+```{r}
 # Visualizaition of top three cell types for each spot
 library("scatterpie")
 library("cowplot")

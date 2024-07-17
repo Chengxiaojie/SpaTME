@@ -1,0 +1,26 @@
+{
+    "id": "570D5573",
+    "path": "~/ST_scRNAseq/HRA000437/copykat/copykat.R",
+    "project_path": null,
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1720599117463.0,
+    "source_on_save": false,
+    "relative_order": 7,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "19,24",
+        "scrollLine": "4"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1720599306,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1720599306433,
+    "read_only": false,
+    "read_only_alternatives": []
+}

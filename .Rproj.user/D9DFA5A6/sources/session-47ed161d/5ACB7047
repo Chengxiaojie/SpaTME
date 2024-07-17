@@ -1,0 +1,28 @@
+{
+    "id": "5ACB7047",
+    "path": null,
+    "project_path": null,
+    "type": "object_explorer",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1720611186381.0,
+    "source_on_save": false,
+    "relative_order": 9,
+    "properties": {
+        "id": "d6eeaf1771b94e46b1db0fa5839f90f3",
+        "name": "Spatial.list",
+        "title": "Spatial.list",
+        "language": "R",
+        "source_window_id": "",
+        "Source": "Source"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1720596642,
+    "encoding": "",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1720611186381,
+    "read_only": false,
+    "read_only_alternatives": []
+}

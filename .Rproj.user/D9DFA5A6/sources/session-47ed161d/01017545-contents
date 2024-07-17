@@ -1,0 +1,25 @@
+# Sat Jul  6 15:08:26 2024
+# Author:xiaojie Cheng
+# Email: 2010825@tongji.edu.cn
+# ---------------
+# About project:
+Spatial.list <- readRDS("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/HCCICB/Temp_RDS/ST.lt.rds")
+outdir <- "/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/HCCICB/copykat/"
+Spatial.list <- Spatial.list[c("P1T", "P11T")]
+library(copykat)
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+for (sam in names(Spatial.list)){
+  copykat.test <- copykat(rawmat = as.matrix(Spatial.list[[sam]]@assays$Spatial@counts),
+                          id.type="S", cell.line="no",
+                          ngene.chr=5, win.size=25,
+                          KS.cut=0.1,
+                          sam.name = sam,
+                          distance="euclidean", n.cores= 10)
+  savefile <- paste0(outdir, sam)
+  if (! dir.exists(savefile)){
+    dir.create(savefile)
+  }
+  setwd(savefile)
+  saveRDS(copykat.test, paste0(savefile, "/copykat.test.rds"))
+}

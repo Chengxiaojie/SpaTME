@@ -1,0 +1,270 @@
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/base.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/Se_preprocess.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/visualization.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/ST_features.2.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/TN_interface.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/unit.R")
+source("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/Code/BayesSpace.R")
+options(stringsAsFactors = F)
+options(datatable.fread.datatable=FALSE)
+outdir <- "~/ST_scRNAseq/GSE111672/pipeline/"
+# load ST data
+Spatial.list <- list()
+st_PDAC_A1.Data = data.table::fread("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/Data/ST/GSM3036911_PDAC-A-ST1-filtered.txt",
+                                    header = T, check.names = F, data.table = F)
+st_PDAC_A1.Data = st_PDAC_A1.Data[!duplicated(st_PDAC_A1.Data$Genes), ]
+rownames(st_PDAC_A1.Data) <- st_PDAC_A1.Data$Genes
+st_PDAC_A1.Data <- st_PDAC_A1.Data[, -1]
+Spatial.list[["A1"]] <- CreateSeuratObject(counts = st_PDAC_A1.Data)
+
+st_PDAC_B1.Data = data.table::fread("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/Data/ST/GSM3405534_PDAC-B-ST1-filtered.txt",
+                                    header = T, check.names = F, data.table = F)
+st_PDAC_B1.Data = st_PDAC_B1.Data[!duplicated(st_PDAC_B1.Data$Genes), ]
+rownames(st_PDAC_B1.Data) <- st_PDAC_B1.Data$Genes
+st_PDAC_B1.Data <- st_PDAC_B1.Data[, -1]
+Spatial.list[["B1"]] <- CreateSeuratObject(counts = st_PDAC_B1.Data)
+for (sam in names(Spatial.list)) {
+  Spatial.list[[sam]] <- STcoordCheck(Spatial.list[[sam]],
+                                      platform = "spatial",
+                                      verbose = T)
+}
+for (sam in names(Spatial.list)) {
+  print(sam)
+  Spatial.list[[sam]] <- SePreprocess(se = Spatial.list[[sam]],
+                                      assay = "RNA",
+                                      mt.qc = NULL,
+                                      norm.method = "SCT",
+                                      variable.features.n = 3000,
+                                      dims = 1:20,
+                                      cluster.resolution = 0.8,
+                                      verbose = F)
+}
+saveRDS(Spatial.list, paste0(outdir, "Temp_RDS/Spatial.list.rds"))
+#
+stf.lt <- list()
+for (sam in names(Spatial.list)) {
+  # create stf object with initial features
+  cell.abun <- read.table(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/cell2location/", sam, "/", sam, ".cell.abundance.txt"),
+                          sep = "\t",
+                          header = T,
+                          row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  stf <- CreateStfObj(st = Spatial.list[[sam]],
+                      stf = stf.lt[[sam]],
+                      assay = "SCT",
+                      slot = "data",
+                      cell.abun = cell.abun,
+                      norm = T,
+                      min.prop = 0.05,
+                      init.fea = c("Position", "CellColocal", "SpeGenes"),
+                      verbose = T
+  )
+  stf.lt[[sam]] <- stf
+}
+
+# BayesSpace cluster
+for (sam in names(Spatial.list)) {
+  se_cluster <- length(unique(Spatial.list[[sam]]$SCT_snn_res.0.8))
+  start <- ifelse((se_cluster - 6) < 3, 3, se_cluster - 6)
+  qs <- seq(start, se_cluster + 6)
+  sce <- BayesCluster(st = Spatial.list[[sam]],
+                      assay = "RNA",
+                      platfrom = "ST",
+                      outdir = paste0(outdir, "/BayesSpace/qplot/", sam, "_"),
+                      num.clu = NULL,
+                      qs = qs,
+                      verbose = T)
+  saveRDS(sce, paste0(outdir, "/BayesSpace/sce/", sam, "_sce.rds"))
+  stf.lt[[sam]]@Annotation <- data.frame(row.names = rownames(stf.lt[[sam]]@Position))
+  stf.lt[[sam]]@Annotation[, "seurat_res.0.8"] <- Spatial.list[[sam]]$SCT_snn_res.0.8
+  stf.lt[[sam]]@Annotation[, "bayes_cluster"] <- sce@colData@listData$spatial.cluster
+  #table(stf@Annotation[, "bayes_cluster"])
+}
+
+for (sam in names(Spatial.list)) {
+  for (i in c("bayes_cluster", "seurat_res.0.8")) {
+    anno <- as.character(stf.lt[[sam]]@Annotation[, i])
+    anno <- paste0("Domain_", anno)
+    col <- LabelMapcolor(labels = as.character(anno))
+    if (! dir.exists(paste0(outdir, "/ST_cluster/", i))) {
+      dir.create(paste0(outdir, "/ST_cluster/", i), recursive = T)
+    }
+    SpotVisualize(st = Spatial.list[[sam]],size = 5,
+                  meta = anno,legend.name = "Domain",
+                  savefile = paste0(outdir, "/ST_cluster/", i, "/", sam, "_cluster.pdf"),
+                  p.height = 8, p.width = 8,
+                  cha.col = col,
+                  title = i)
+  }
+}
+
+## Tumor-Normal interface
+maxval <- rep(0.06, 8) %>% setNames(names(stf.lt))
+minval <- rep(0.03, 8) %>% setNames(names(stf.lt))
+for (sam in "A1") {
+  print(sam)
+  if (!dir.exists(paste0(outdir, "/TN_interface/", sam))) {
+    dir.create(paste0(outdir, "/TN_interface/", sam), recursive = T)
+  }
+  cell.abun <- read.table(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  abun.all <- log2(rowSums(cell.abun)+1)
+  abun.all <- abun.all/max(abun.all)
+  cell.abun <- cell.abun/rowSums(cell.abun)
+  ES <- rowSums(cell.abun[, c("Cancer.clone.A", "Cancer.clone.B")])
+  ES <- ES*abun.all
+  ES <- ES/max(ES)
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = ES,
+                savefile = paste0(outdir, "/TN_interface/", sam, "/tumor_abundance.pdf"),
+                #limits = c(0, 1),
+                p.height = 6.5, p.width = 6.5, size = 5,
+                num.high = "#c32f27", num.mid = "lightyellow", num.low = "#0077b6",
+                title = "Tumor abundance")
+
+  edge_score <- TedgeScore(ES = ES,
+                           st_pos = stf.lt[[sam]]@Position,
+                           cluster = stf.lt[[sam]]@Annotation$bayes_cluster,
+                           r.dist = 1)
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = edge_score,
+                limits = c(0,0.5),
+                savefile = paste0(outdir, "/TN_interface/", sam, "/edge_score.pdf"),
+                p.height = 6.5, p.width = 6.5,size = 5,
+                num.high = "#a4161a",  num.mid = "#e5614b", num.low = "#ced4da", title = "Edge.score")
+  stf.lt[[sam]]@Annotation[, "edge_score"] <- edge_score[rownames(stf.lt[[sam]]@Position)]
+  # define the boundary spots using edge_score
+  boun_reg <- BounRegDefine(x = stf.lt[[sam]]@Annotation[, "edge_score"],
+                            st_pos = stf.lt[[sam]]@Position,
+                            r.dist = 1,
+                            maxval = maxval[sam],
+                            minval = minval[sam],
+                            max.clu.pt = 0.75,
+                            boun.nei.n = 2,
+                            candi.step = 1,
+                            min.spots = 10,
+                            verbose = T)
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = boun_reg[colnames(Spatial.list[[sam]])],
+                p.height = 6.5, p.width = 6.5, size = 5,
+                savefile = paste0(outdir, "/TN_interface/", sam, "/defined_boundary", minval[sam], "_", maxval[sam],".pdf"),
+                cha.col = c(TNI = "#e76f51", nTNI = "#ced4da"),
+                title = paste0("Defined TN interface; cut ", maxval[sam], "_", minval[sam]))
+  stf.lt[[sam]]@Annotation[, "boun_reg"] <- boun_reg[rownames(stf.lt[[sam]]@Position)]
+  AbunTNIPlot(pos = stf.lt[[sam]]@Position,
+               abun = ES, stroke = 1.2,
+               label = stf.lt[[sam]]@Annotation[, "boun_reg"],
+               l_nshow = "nTNI",
+               savefile = paste0(outdir, "/TN_interface/", sam, "/Abundance_TNI.pdf"),
+               p.height = 6.5, p.width = 6.5, size = 5.5,
+              line_col = c("TNI" = "black", "nTNI" = NA))
+}
+for (sam in "A1") {
+  bountype <- GroupTNItypes(TNI_pos = stf.lt[[sam]]@Position[stf.lt[[sam]]@Annotation$boun_reg == "TNI",],
+                            cluster = stf.lt[[sam]]@Annotation$bayes_cluster[stf.lt[[sam]]@Annotation$boun_reg == "TNI"],
+                            type_n = 1)
+  alltype <- rep("others", length(boun_reg))
+  names(alltype) <- names(boun_reg)
+  alltype[names(bountype)] <- bountype
+  stf.lt[[sam]]@Annotation[, "boun_type"] <- alltype
+  # boun cluster
+  clu <- as.character(stf.lt[[sam]]@Annotation[, "bayes_cluster"])
+  clu[alltype == "others"] = "others"
+  col <- LabelMapcolor(labels = clu,
+                       assgin.col = c(others = "#ced4da"))
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = clu,
+                savefile = paste0(outdir, "/TN_interface/", sam, "/bayes_cluster.pdf"),
+                p.height = 6.5, p.width = 6.5, size = 4.5,
+                cha.col = col, plot.title = element_text(size = 24),
+                title = "Bayes_cluster")
+  col <- LabelMapcolor(labels = alltype,
+                       assgin.col = c(others = "#ced4da"))
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = alltype,
+                savefile = paste0(outdir, "/TN_interface/", sam, "/boun_type.pdf"),
+                p.height = 6.5, p.width = 6.5, size = 4.5,
+                cha.col = col, plot.title = element_text(size = 24),
+                title = "TNI type")
+  stf.lt[[sam]]@Annotation[, "boun_type"] <- alltype
+  clu = as.character(stf.lt[[sam]]@Annotation[, "bayes_cluster"])
+  names(clu) <- rownames(stf.lt[[sam]]@Position)
+  cell.abun <- read.table(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/cell2location/", sam,"/", sam, ".cell.abundance.txt"),
+                          sep = "\t", header = T, row.names = 1)
+  colnames(cell.abun) <- substr(colnames(cell.abun), 24, nchar(colnames(cell.abun)))
+  abun.all <- log2(rowSums(cell.abun)+1)
+  abun.all <- abun.all/max(abun.all)
+  cell.abun <- cell.abun/rowSums(cell.abun)
+  ES <- rowSums(cell.abun[, c("Cancer.clone.A", "Cancer.clone.B")])
+  ES <- ES*abun.all
+  ES <- ES/max(ES)
+  class <- TNIClass(type = stf.lt[[sam]]@Annotation[, "boun_type"],
+                     cluster = clu,
+                     ES = ES)
+  col <- c(others = "#ced4da", T_boun = "#e9724c", N_boun = "#336699")
+  SpotVisualize(st = Spatial.list[[sam]],
+                meta = class,
+                savefile = paste0(outdir, "/TN_interface/", sam, "/boun_class.pdf"),
+                p.height = 6.5, p.width = 6.5, size = 5,
+                cha.col = col, plot.title = element_text(size = 24),
+                title = "TNI class")
+  stf.lt[[sam]]@Annotation[, "boun_class"] <- class
+}
+saveRDS(stf.lt, paste0(outdir, "stf.lt.rds"))
+# boxplot
+theme.set <- theme(
+  panel.grid.major.y=element_blank(),
+  panel.grid.minor.y=element_blank(),
+  panel.background = element_blank(),
+  axis.text.x = element_text(hjust = 0.5),
+  plot.title=element_text(hjust =0.5, size = 12),
+  axis.line.y=element_line(linetype=1,color='black'),
+  axis.line.x=element_line(linetype=1,color='black'),
+  legend.text=element_text(size=12),
+  legend.title = element_text(size=14),
+  axis.text=element_text(size=14),
+  axis.title.y = element_blank(),
+  axis.title.x = element_blank()
+)
+library(rstatix)
+library(ggpubr)
+data <- data.frame(Abundances = ES,
+                   stf.lt[[sam]]@Annotation[names(ES), c("boun_reg","boun_class")])
+data <- data[data$boun_class != "others",]
+stat.test <- data %>%
+  wilcox_test(Abundances ~ boun_class) %>%
+  add_significance("p") %>% add_x_position(x = "boun_class")
+pdf(paste0(outdir, "/TN_interface/", sam, "/boxplot_tumor.pdf"), width = 4, height = 3)
+p <- ggplot(data = data, aes(y = Abundances, x = boun_class)) +
+  geom_boxplot(aes(fill = boun_class))  +
+  theme.set +
+  stat_pvalue_manual(stat.test, y.position = c(max(data$Abundances)+0.1), tip.length = 0.01, size = 7) +
+  scale_fill_manual(values = c("#336699", "#e9724c"))
+print(p)
+dev.off()
+#CNV
+copykat.test <- readRDS(paste0("/NFS_home/NFS_home_2/chengxj/ST_scRNAseq/GSE111672/copykat/", sam, "/copykat.test.rds"))
+CNA.test <- data.frame(copykat.test$CNAmat, check.names = F)[, -(1:3)]
+colnames(CNA.test) <- substr(colnames(CNA.test), 2, nchar(colnames(CNA.test)))
+ES <- colMeans(abs(CNA.test))
+data <- data.frame(CNV.score = ES,
+                   stf.lt[[sam]]@Annotation[names(ES), c("boun_reg","boun_class")])
+SpotVisualize(Spatial.list[[sam]][,names(ES)], meta = Norm01(ES),
+              scale_y_reverse = T, size = 5,
+              savefile = paste0(outdir, "TN_interface/CNV/", sam, "_CNVscore.pdf"),
+              p.height = 8, p.width = 8,
+              title = "CNV score")
+data <- data[data$boun_class != "others",]
+
+stat.test <- data %>%
+  wilcox_test(CNV.score ~ boun_class) %>%
+  add_significance("p") %>% add_x_position(x = "boun_class")
+pdf(paste0(outdir, "TN_interface/CNV/", sam, "_CNA_boxplot_boun.pdf"), width = 4, height = 3)
+print(ggplot(data = data, aes(y = CNV.score, x = boun_class)) +
+        geom_boxplot(aes(fill = boun_class))  +
+        theme.set +
+        stat_pvalue_manual(stat.test, y.position = c(max(data$CNV.score)+0.1*max(data$CNV.score)),
+                           tip.length = 0.01, size = 7) +
+        scale_fill_manual(values = c("#336699", "#e9724c")))
+dev.off()
